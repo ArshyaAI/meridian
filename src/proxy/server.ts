@@ -15,6 +15,7 @@ import { withClaudeLogContext } from "../logger"
 import { fuzzyMatchAgentName } from "./agentMatch"
 import { buildAgentDefinitions } from "./agentDefs"
 import { createPassthroughMcpServer, stripMcpPrefix, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX } from "./passthroughTools"
+import { lookupSharedSession, storeSharedSession, clearSharedSessions } from "./sessionStore"
 
 // --- Session Tracking ---
 // Maps OpenCode session ID (or fingerprint) → Claude SDK session ID
@@ -31,6 +32,8 @@ const fingerprintCache = new Map<string, SessionState>()
 export function clearSessionCache() {
   sessionCache.clear()
   fingerprintCache.clear()
+  // Also clear shared file store
+  try { clearSharedSessions() } catch {}
 }
 
 // Clean stale sessions every hour — sessions survive a full workday
@@ -63,13 +66,41 @@ function lookupSession(
   opencodeSessionId: string | undefined,
   messages: Array<{ role: string; content: any }>
 ): SessionState | undefined {
-  // Primary: use x-opencode-session header
+  // When a session ID is provided, only match by that ID — don't fall through
+  // to fingerprint. A different session ID means a different session.
   if (opencodeSessionId) {
-    return sessionCache.get(opencodeSessionId)
+    const cached = sessionCache.get(opencodeSessionId)
+    if (cached) return cached
+    // Check shared file store
+    const shared = lookupSharedSession(opencodeSessionId)
+    if (shared) {
+      const state: SessionState = {
+        claudeSessionId: shared.claudeSessionId,
+        lastAccess: shared.lastUsedAt,
+        messageCount: 0,
+      }
+      sessionCache.set(opencodeSessionId, state)
+      return state
+    }
+    return undefined
   }
-  // Fallback: fingerprint (only when no header is present)
+
+  // No session ID — use fingerprint fallback
   const fp = getConversationFingerprint(messages)
-  if (fp) return fingerprintCache.get(fp)
+  if (fp) {
+    const cached = fingerprintCache.get(fp)
+    if (cached) return cached
+    const shared = lookupSharedSession(fp)
+    if (shared) {
+      const state: SessionState = {
+        claudeSessionId: shared.claudeSessionId,
+        lastAccess: shared.lastUsedAt,
+        messageCount: 0,
+      }
+      fingerprintCache.set(fp, state)
+      return state
+    }
+  }
   return undefined
 }
 
@@ -81,9 +112,13 @@ function storeSession(
 ) {
   if (!claudeSessionId) return
   const state: SessionState = { claudeSessionId, lastAccess: Date.now(), messageCount: messages?.length || 0 }
+  // In-memory cache
   if (opencodeSessionId) sessionCache.set(opencodeSessionId, state)
   const fp = getConversationFingerprint(messages)
   if (fp) fingerprintCache.set(fp, state)
+  // Shared file store (cross-proxy resume)
+  const key = opencodeSessionId || fp
+  if (key) storeSharedSession(key, claudeSessionId)
 }
 
 /** Extract only the last user message (for resume — SDK already has history) */

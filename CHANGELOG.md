@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.0](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.8.1...v1.9.0) (2026-03-20)
+
+
+### Features
+
+* per-terminal proxy launcher and shared session store ([836102c](https://github.com/rynfar/opencode-claude-max-proxy/commit/836102cb8d9b36acc88e3d4e19d753df0515020c))
+* per-terminal proxy launcher and shared session store ([d2ace88](https://github.com/rynfar/opencode-claude-max-proxy/commit/d2ace88a927b225a148bc5e4239b779d3ddf6a78))
+
 ## [1.8.1](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.8.0...v1.8.1) (2026-03-20)
 
 
