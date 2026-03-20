@@ -97,7 +97,7 @@ docker compose exec proxy claude login
 curl http://127.0.0.1:3456/health
 ```
 
-> **Note:** On macOS, `claude login` must be run inside the container (keychain credentials can't be mounted). On Linux, volume-mounting `~/.claude` may work without re-login.
+> **Note:** On macOS, use `./bin/docker-auth.sh` to copy host credentials into the container (handles the keychain/scopes format difference). On Linux, volume-mounting `~/.claude` may work directly.
 
 ### Connect OpenCode
 
@@ -107,9 +107,9 @@ curl http://127.0.0.1:3456/health
 ./bin/oc.sh
 ```
 
-Each terminal gets its own proxy on a random port. No port conflicts, no concurrency crashes. The proxy starts automatically, connects OpenCode, and cleans up when you exit. Sessions resume across terminals via a shared session file.
+Each terminal gets its own proxy on a random port. Proxy starts automatically, connects OpenCode, and cleans up on exit. Sessions resume across terminals via a shared file store.
 
-Add to your shell config for easy access:
+Shell alias:
 
 ```bash
 # ~/.zshrc or ~/.bashrc
@@ -118,7 +118,7 @@ alias oc='/path/to/opencode-claude-max-proxy/bin/oc.sh'
 
 #### Shared Proxy
 
-If you prefer a single long-running proxy:
+For a single long-running proxy:
 
 ```bash
 # Terminal 1: start the proxy
@@ -128,11 +128,11 @@ CLAUDE_PROXY_PASSTHROUGH=1 bun run proxy
 ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode
 ```
 
-The `ANTHROPIC_API_KEY` can be any non-empty string — the proxy doesn't use it. Authentication is handled by your `claude login` session.
+`ANTHROPIC_API_KEY` can be any non-empty string. Authentication is handled by `claude login`.
 
 #### OpenCode Desktop / Config File
 
-For OpenCode Desktop (or to avoid env vars), add the proxy to `~/.config/opencode/opencode.json`. Start the shared proxy in the background and Desktop connects automatically.
+Set the proxy URL in `~/.config/opencode/opencode.json` to use with Desktop or avoid env vars.
 
 ```json
 {
@@ -147,7 +147,7 @@ For OpenCode Desktop (or to avoid env vars), add the proxy to `~/.config/opencod
 }
 ```
 
-> **Tip:** Use the shared proxy with the supervisor for Desktop: `CLAUDE_PROXY_PASSTHROUGH=1 bun run proxy`. Both Desktop and terminal instances share sessions via the file store.
+> Desktop requires the shared proxy on a fixed port. Run `CLAUDE_PROXY_PASSTHROUGH=1 bun run proxy` in the background. Sessions are shared between Desktop and terminal instances.
 
 ## Modes
 
@@ -191,15 +191,11 @@ In internal mode, a `PreToolUse` hook fuzzy-matches agent names as a safety net 
 
 ## Session Resume
 
-The proxy tracks SDK session IDs and resumes conversations on follow-up requests:
+The proxy tracks SDK session IDs and resumes conversations on follow-up requests. Sessions are stored in `~/.cache/opencode-claude-max-proxy/sessions.json`, shared across all proxy instances (including per-terminal proxies).
 
-- **Faster responses** — no re-processing of conversation history
-- **Better context** — the SDK remembers tool results from previous turns
-- **Works across terminals** — sessions are shared via a file store at `~/.cache/opencode-claude-max-proxy/sessions.json`
+Lookup order:
 
-Session tracking works two ways:
-
-1. **Header-based** (recommended) — Add the included OpenCode plugin:
+1. **Header-based** — add the included OpenCode plugin to inject session headers:
 
    ```json
    {
@@ -209,9 +205,9 @@ Session tracking works two ways:
    }
    ```
 
-2. **Fingerprint-based** (automatic fallback) — hashes the first user message to identify returning conversations
+2. **Fingerprint-based** (automatic fallback) — hashes the first user message to match returning conversations
 
-Sessions are cached for 24 hours. When using per-terminal proxies (`oc.sh`), the shared file store ensures a session started in one terminal can be resumed from another.
+Sessions expire after 24 hours.
 
 ## Configuration
 
@@ -226,19 +222,9 @@ Sessions are cached for 24 hours. When using per-terminal proxies (`oc.sh`), the
 
 ## Concurrency
 
-**Per-terminal proxies (`oc.sh`)** are the recommended approach for multiple terminals. Each OpenCode instance gets its own proxy — no concurrency issues at all.
+Per-terminal proxies (`oc.sh`) avoid concurrency issues entirely. Each terminal gets its own proxy.
 
-**Shared proxy** supports concurrent requests but has a known limitation:
-
-> **⚠️ Known Issue: Bun SSE Crash ([oven-sh/bun#17947](https://github.com/oven-sh/bun/issues/17947))**
->
-> The Claude Agent SDK's `cli.js` subprocess (compiled with Bun) has a known segfault during cleanup of concurrent streaming responses.
->
-> - **All responses are delivered correctly** — the crash only occurs after responses complete
-> - **The supervisor auto-restarts** in ~1-3 seconds
-> - **Per-terminal proxies avoid this entirely** — no concurrency, no crash
->
-> We are monitoring the upstream Bun issue for a fix.
+The shared proxy supports concurrent requests but the SDK's `cli.js` subprocess (compiled with Bun) can segfault during stream cleanup ([oven-sh/bun#17947](https://github.com/oven-sh/bun/issues/17947)). Responses are always delivered correctly; the crash occurs after completion. The supervisor auto-restarts within a few seconds.
 
 ## FAQ
 
