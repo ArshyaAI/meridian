@@ -471,6 +471,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
 
               const skipBlockIndices = new Set<number>()
               const taskBlockIndices = new Set<number>() // Track task tool blocks for agent name normalization
+              let messageStartEmitted = false // Track if we've sent a message_start to the client
 
               try {
                 for await (const message of response) {
@@ -502,6 +503,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
                     // that the SDK executes. Don't forward them to OpenCode.
                     if (eventType === "message_start") {
                       skipBlockIndices.clear()
+                      // Only emit the first message_start — subsequent ones are internal SDK turns
+                      if (messageStartEmitted) {
+                        continue
+                      }
+                      messageStartEmitted = true
+                    }
+
+                    // Skip intermediate message_stop events (SDK will start another turn)
+                    // Only emit message_stop when the final message ends
+                    if (eventType === "message_stop") {
+                      // Peek: if there are more events coming, skip this message_stop
+                      // We handle this by only emitting message_stop at the very end (after the loop)
+                      continue
                     }
 
                     if (eventType === "content_block_start") {
@@ -523,12 +537,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
                       continue
                     }
 
-                    // For message_delta/message_stop: only skip if ALL content blocks in this
-                    // message were MCP tools (i.e., nothing was forwarded to the client)
-                    if (eventType === "message_delta" || eventType === "message_stop") {
-                      // If we forwarded any content blocks, forward the message events too
-                      const hasForwardedContent = eventsForwarded > 0 || skipBlockIndices.size === 0
-                      if (!hasForwardedContent && (event as any).delta?.stop_reason === "tool_use") {
+                    // Skip intermediate message_delta with stop_reason: tool_use
+                    // (SDK is about to execute MCP tools and continue)
+                    if (eventType === "message_delta") {
+                      const stopReason = (event as any).delta?.stop_reason
+                      if (stopReason === "tool_use" && skipBlockIndices.size > 0) {
+                        // All tool_use blocks in this turn were MCP — skip this delta
                         continue
                       }
                     }
@@ -587,6 +601,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
               }
 
               if (!streamClosed) {
+                // Emit the final message_stop (we skipped all intermediate ones)
+                if (messageStartEmitted) {
+                  safeEnqueue(encoder.encode(`event: message_stop\ndata: {"type":"message_stop"}\n\n`), "final_message_stop")
+                }
+
                 controller.close()
                 streamClosed = true
 
