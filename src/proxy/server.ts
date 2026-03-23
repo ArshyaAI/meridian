@@ -5,8 +5,8 @@ import type { Server } from "node:http"
 import { query } from "@anthropic-ai/claude-agent-sdk"
 import type { Context } from "hono"
 import { DEFAULT_PROXY_CONFIG } from "./types"
-import type { ProxyConfig, ProxyInstance } from "./types"
-export type { ProxyConfig, ProxyInstance }
+import type { ProxyConfig, ProxyInstance, ProxyServer } from "./types"
+export type { ProxyConfig, ProxyInstance, ProxyServer }
 import { claudeLog } from "../logger"
 import { exec as execCallback } from "child_process"
 import { existsSync } from "fs"
@@ -459,7 +459,7 @@ function isClosedControllerError(error: unknown): boolean {
   return error.message.includes("Controller is already closed")
 }
 
-export function createProxyServer(config: Partial<ProxyConfig> = {}) {
+export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServer {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
   const app = new Hono()
 
