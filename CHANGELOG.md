@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.1](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.13.0...v1.13.1) (2026-03-23)
+
+
+### Bug Fixes
+
+* detect conversation divergence (undo/edit) via lineage hashing ([ced5819](https://github.com/rynfar/opencode-claude-max-proxy/commit/ced58192a0af583db2e01311f80d7db6ed8908e6))
+* detect conversation divergence (undo/edit) via lineage hashing ([a09558a](https://github.com/rynfar/opencode-claude-max-proxy/commit/a09558a789ce7b133021f43c3ec3ec85f71014b5)), closes [#86](https://github.com/rynfar/opencode-claude-max-proxy/issues/86)
+
 ## [1.13.0](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.12.2...v1.13.0) (2026-03-22)
 
 
