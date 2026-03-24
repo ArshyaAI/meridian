@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.16.1](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.16.0...v1.16.1) (2026-03-24)
+
+
+### Bug Fixes
+
+* enable 1M context window for Sonnet models ([0e3464a](https://github.com/rynfar/opencode-claude-max-proxy/commit/0e3464ab8f6f8acd2eff118f8bbd49f446d442c4))
+* enable 1M context window for Sonnet models ([08dc8ff](https://github.com/rynfar/opencode-claude-max-proxy/commit/08dc8ff17624cacc54a5b6cecb072a118c7f46ea)), closes [#124](https://github.com/rynfar/opencode-claude-max-proxy/issues/124)
+* extract client working directory from system prompt for remote proxy ([fbf8cfb](https://github.com/rynfar/opencode-claude-max-proxy/commit/fbf8cfb2a56e478490e823e3dceedadb4646b5ef))
+* extract client working directory from system prompt for remote proxy ([10279ec](https://github.com/rynfar/opencode-claude-max-proxy/commit/10279ec044a04f0001bc2dc79d24eed07769f05e)), closes [#123](https://github.com/rynfar/opencode-claude-max-proxy/issues/123)
+* optimize Docker layer ordering to cache dependencies ([dd4351a](https://github.com/rynfar/opencode-claude-max-proxy/commit/dd4351ad52f1a558ed143595a9fffa8ae8a449c9))
+* optimize Docker layer ordering to cache dependencies ([8f29948](https://github.com/rynfar/opencode-claude-max-proxy/commit/8f2994844abc9413abfcd9faf96767d1eadad8f4)), closes [#125](https://github.com/rynfar/opencode-claude-max-proxy/issues/125)
+
 ## [1.16.0](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.15.3...v1.16.0) (2026-03-24)
 
 
