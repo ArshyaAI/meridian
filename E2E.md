@@ -56,6 +56,11 @@ kill $(lsof -ti :3456)
 | D8 | [Droid: exec Session Isolation](#d8-droid-exec-session-isolation) | Each `droid exec` call is a fresh session (expected — no history passed) | 2026-03-29 |
 | D9 | [Droid: Streaming SSE](#d9-droid-streaming-sse) | SSE stream correct format with Droid User-Agent | 2026-03-29 |
 | D10 | [Droid: OpenCode Session Unaffected](#d10-droid-opencode-session-unaffected) | OpenCode header-based session tracking still works alongside Droid | 2026-03-29 |
+| C1 | [Crush: Basic Response](#c1-crush-basic-response) | Proxy accepts Charm-Crush/ User-Agent, routes via crush adapter, returns valid response | 2026-03-29 |
+| C2 | [Crush: Session Continuation](#c2-crush-session-continuation) | `crush run --continue` resumes via fingerprint; `lineage=continuation` in proxy log | 2026-03-29 |
+| C3 | [Crush: Tool Use (Read)](#c3-crush-tool-use-read) | `ls`/`view`/`grep` tool round-trip: Crush executes, sends tool_result, proxy resumes | 2026-03-29 |
+| C4 | [Crush: Model Routing](#c4-crush-model-routing) | sonnet-4-6→sonnet[1m], opus-4-6→opus[1m], haiku→haiku for Max users | 2026-03-29 |
+| C5 | [Crush: Backward Compat](#c5-crush-backward-compat) | OpenCode and Droid sessions unaffected when Crush requests coexist | 2026-03-29 |
 
 ---
 
@@ -1286,3 +1291,185 @@ cp ~/.factory/settings.json.backup ~/.factory/settings.json 2>/dev/null
 # Kill the test proxy
 kill $(lsof -ti :3457) 2>/dev/null
 ```
+
+---
+
+## Crush (Charm) Tests
+
+These tests verify the Crush adapter. Crush connects via a provider entry in `~/.config/crush/crush.json` — no BYOK or special auth needed, just a base_url pointing at the proxy.
+
+### Crush Provider Setup
+
+Add the `claude-max` provider to `~/.config/crush/crush.json`:
+
+```json
+{
+  "providers": {
+    "claude-max": {
+      "id": "claude-max",
+      "name": "Claude Max (Meridian)",
+      "type": "anthropic",
+      "base_url": "http://127.0.0.1:3456",
+      "api_key": "dummy",
+      "models": [
+        {
+          "id": "claude-sonnet-4-6",
+          "name": "Claude Sonnet 4.6 (1M)",
+          "context_window": 1000000,
+          "default_max_tokens": 64000,
+          "can_reason": true,
+          "supports_attachments": true
+        },
+        {
+          "id": "claude-opus-4-6",
+          "name": "Claude Opus 4.6 (1M)",
+          "context_window": 1000000,
+          "default_max_tokens": 32768,
+          "can_reason": true,
+          "supports_attachments": true
+        },
+        {
+          "id": "claude-haiku-4-5-20251001",
+          "name": "Claude Haiku 4.5",
+          "context_window": 200000,
+          "default_max_tokens": 16384,
+          "can_reason": true,
+          "supports_attachments": true
+        }
+      ]
+    }
+  }
+}
+```
+
+Verify Crush sees the models:
+```bash
+crush models | grep claude-max
+# → claude-max/claude-sonnet-4-6
+# → claude-max/claude-opus-4-6
+# → claude-max/claude-haiku-4-5-20251001
+```
+
+---
+
+## C1: Crush Basic Response
+
+**Verifies:** Proxy detects `Charm-Crush/` User-Agent, selects crush adapter, returns valid response.
+
+```bash
+crush run \
+  --model claude-max/claude-sonnet-4-6 \
+  --cwd /path/to/your/project \
+  --quiet \
+  "Respond with exactly: CRUSH_E2E_OK"
+```
+
+**Pass criteria:**
+- Output: `CRUSH_E2E_OK`
+- Proxy log: `model=sonnet[1m] stream=true tools=19 lineage=new session=new`
+- Note: first request may show `rate-limited on [1m], retrying with sonnet` — this is expected, the proxy auto-falls back
+
+---
+
+## C2: Crush Session Continuation
+
+**Verifies:** `crush run --continue` resumes the most recent Crush session via fingerprint-based cache lookup.
+
+```bash
+# Turn 1: establish session
+crush run \
+  --model claude-max/claude-sonnet-4-6 \
+  --cwd /path/to/your/project \
+  --quiet \
+  "Remember the code: CRUSH_CONT_99. Reply with 'stored'."
+
+# Turn 2: continue that session
+crush run \
+  --model claude-max/claude-sonnet-4-6 \
+  --cwd /path/to/your/project \
+  --continue \
+  --quiet \
+  "What was the code I asked you to remember?"
+```
+
+**Pass criteria:**
+- Turn 1 output: `stored` (or equivalent)
+- Turn 2 output: includes `CRUSH_CONT_99`
+- Proxy log Turn 2: `lineage=continuation session=<id>` — fingerprint matched, not a new session
+
+---
+
+## C3: Crush Tool Use (Read)
+
+**Verifies:** Crush's tool execution loop works through the proxy. Crush sends a tool call, the proxy returns it (passthrough mode), Crush executes it, sends the result back, and Claude responds with the content.
+
+```bash
+crush run \
+  --model claude-max/claude-sonnet-4-6 \
+  --cwd /path/to/your/project \
+  --quiet \
+  "Use the ls tool to list the files in the current directory and show me the output"
+```
+
+**Pass criteria:**
+- Output shows directory listing (actual files, not hallucinated)
+- Proxy log: two entries for the same session — first `lineage=new` (initial turn), then `lineage=continuation` (after tool result returned) — confirms the multi-turn tool loop worked
+- `msgs=` on the second log entry shows `tool_use` and `tool_result` in the message chain
+
+**Note:** `crush run` operates without auto-approval for write operations. Read-only tools (`ls`, `view`, `grep`, `bash` for non-destructive commands) work without prompting. Write/edit operations require interactive approval — use the Crush TUI for those.
+
+---
+
+## C4: Crush Model Routing
+
+**Verifies:** Model names in `crush.json` map to the correct Claude Max tiers.
+
+```bash
+# Sonnet 4.6 → sonnet[1m]
+crush run --model claude-max/claude-sonnet-4-6 --quiet "Say: SONNET_OK" 2>/dev/null
+# Proxy log: model=sonnet[1m]
+
+# Opus 4.6 → opus[1m]
+crush run --model claude-max/claude-opus-4-6 --quiet "Say: OPUS_OK" 2>/dev/null
+# Proxy log: model=opus[1m]
+
+# Haiku 4.5 → haiku
+crush run --model claude-max/claude-haiku-4-5-20251001 --quiet "Say: HAIKU_OK" 2>/dev/null
+# Proxy log: model=haiku
+```
+
+**Pass criteria:**
+- Each model routes to the expected tier in proxy logs
+- Sonnet 4.6 and Opus 4.6 both show `[1m]` (extended context) for Max subscribers
+- Haiku shows `model=haiku` (no extended context)
+
+---
+
+## C5: Crush Backward Compat
+
+**Verifies:** Crush requests coexist with OpenCode and Droid sessions on the same proxy port. No cross-contamination between adapters.
+
+```bash
+# Fire all three agents in sequence
+crush run --model claude-max/claude-haiku-4-5-20251001 --quiet "Say: CRUSH_COEXIST" 2>/dev/null
+
+curl -s http://127.0.0.1:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: dummy" \
+  -H "x-opencode-session: c5-oc-001" \
+  -d '{"model":"claude-sonnet-4-5-20250929","max_tokens":20,"stream":false,"messages":[{"role":"user","content":"Say: OC_COEXIST"}]}' \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['content'][0]['text'])"
+
+curl -s http://127.0.0.1:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: dummy" \
+  -H "User-Agent: factory-cli/0.89.0" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":20,"stream":false,"messages":[{"role":"user","content":"Say: DROID_COEXIST"}]}' \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['content'][0]['text'])"
+```
+
+**Pass criteria:**
+- All three respond correctly without interfering with each other
+- Proxy logs show `model=haiku` for Crush, normal models for others
+- OpenCode session `c5-oc-001` is tracked independently (header-based)
+- Droid and Crush both use fingerprint-based tracking independently

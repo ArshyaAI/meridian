@@ -90,6 +90,38 @@ For automatic session tracking, use a plugin like [opencode-meridian](https://gi
 }
 ```
 
+### Crush (Charm)
+
+Add a provider to `~/.config/crush/crush.json`:
+
+```json
+{
+  "providers": {
+    "claude-max": {
+      "id": "claude-max",
+      "name": "Claude Max (Meridian)",
+      "type": "anthropic",
+      "base_url": "http://127.0.0.1:3456",
+      "api_key": "dummy",
+      "models": [
+        { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (1M)", "context_window": 1000000, "default_max_tokens": 64000, "can_reason": true, "supports_attachments": true },
+        { "id": "claude-opus-4-6",   "name": "Claude Opus 4.6 (1M)",   "context_window": 1000000, "default_max_tokens": 32768, "can_reason": true, "supports_attachments": true },
+        { "id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "context_window": 200000, "default_max_tokens": 16384, "can_reason": true, "supports_attachments": true }
+      ]
+    }
+  }
+}
+```
+
+Then use Meridian models in Crush:
+
+```bash
+crush run --model claude-max/claude-sonnet-4-6 "refactor this function"
+crush --model claude-max/claude-opus-4-6       # interactive TUI
+```
+
+Crush is automatically detected from its `Charm-Crush/` User-Agent — no extra configuration needed.
+
 ### Droid (Factory AI)
 
 Droid connects via its BYOK (Bring Your Own Key) feature. This is a one-time setup.
@@ -153,7 +185,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 |-------|--------|--------|-------|
 | [OpenCode](https://github.com/anomalyco/opencode) | ✅ Verified | [opencode-meridian](https://github.com/ianjwhite99/opencode-meridian) | Full tool support, session resume, streaming, subagents |
 | [Droid (Factory AI)](https://factory.ai/product/ide) | ✅ Verified | BYOK config (see setup above) | Full tool support, session resume, streaming; one-time BYOK setup |
-| [Crush](https://github.com/charmbracelet/crush) | ✅ Verified | — | Tool execution, multi-turn, headless mode |
+| [Crush](https://github.com/charmbracelet/crush) | ✅ Verified | Provider config (see setup below) | Full tool support, session resume, streaming, headless `crush run` |
 | [Cline](https://github.com/cline/cline) | 🔲 Untested | — | Should work — standard Anthropic API |
 | [Continue](https://github.com/continuedev/continue) | 🔲 Untested | — | Should work — standard Anthropic API |
 | [Aider](https://github.com/paul-gauthier/aider) | 🔲 Untested | — | Should work — standard Anthropic API |
@@ -222,7 +254,15 @@ interface AgentAdapter {
 }
 ```
 
-Agent detection is automatic from the `User-Agent` header — `factory-cli/*` maps to the Droid adapter, everything else falls back to OpenCode. See [`adapters/detect.ts`](src/proxy/adapters/detect.ts) and [`adapters/opencode.ts`](src/proxy/adapters/opencode.ts) for reference.
+Agent detection is automatic from the `User-Agent` header:
+
+| User-Agent prefix | Adapter |
+|---|---|
+| `Charm-Crush/` | Crush |
+| `factory-cli/` | Droid |
+| *(anything else)* | OpenCode (default) |
+
+See [`adapters/detect.ts`](src/proxy/adapters/detect.ts) and [`adapters/opencode.ts`](src/proxy/adapters/opencode.ts) for reference.
 
 ## Configuration
 

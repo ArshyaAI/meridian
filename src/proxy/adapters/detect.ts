@@ -9,19 +9,25 @@ import type { Context } from "hono"
 import type { AgentAdapter } from "../adapter"
 import { openCodeAdapter } from "./opencode"
 import { droidAdapter } from "./droid"
+import { crushAdapter } from "./crush"
 
 /**
  * Detect which agent adapter to use based on request headers.
  *
  * Detection rules (evaluated in order):
- * 1. User-Agent starts with "factory-cli/" → Droid adapter
- * 2. Default → OpenCode adapter (backward compatible)
+ * 1. User-Agent starts with "factory-cli/"  → Droid adapter
+ * 2. User-Agent starts with "Charm-Crush/"  → Crush adapter
+ * 3. Default                                → OpenCode adapter (backward compatible)
  */
 export function detectAdapter(c: Context): AgentAdapter {
   const userAgent = c.req.header("user-agent") || ""
 
   if (userAgent.startsWith("factory-cli/")) {
     return droidAdapter
+  }
+
+  if (userAgent.startsWith("Charm-Crush/")) {
+    return crushAdapter
   }
 
   return openCodeAdapter

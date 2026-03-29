@@ -9,6 +9,7 @@ import { describe, it, expect } from "bun:test"
 import { detectAdapter } from "../proxy/adapters/detect"
 import { openCodeAdapter } from "../proxy/adapters/opencode"
 import { droidAdapter } from "../proxy/adapters/droid"
+import { crushAdapter } from "../proxy/adapters/crush"
 
 function makeContext(userAgent: string): any {
   return {
@@ -39,6 +40,25 @@ describe("detectAdapter — Droid detection", () => {
   it("returns droidAdapter for 'factory-cli/' with extra info", () => {
     const adapter = detectAdapter(makeContext("factory-cli/0.89.0 (darwin; arm64)"))
     expect(adapter).toBe(droidAdapter)
+  })
+})
+
+describe("detectAdapter — Crush detection", () => {
+  it("returns crushAdapter for 'Charm-Crush/v0.51.2'", () => {
+    const adapter = detectAdapter(makeContext("Charm-Crush/v0.51.2 (https://charm.land/crush)"))
+    expect(adapter).toBe(crushAdapter)
+    expect(adapter.name).toBe("crush")
+  })
+
+  it("returns crushAdapter for any 'Charm-Crush/' prefix", () => {
+    expect(detectAdapter(makeContext("Charm-Crush/v0.1.0")).name).toBe("crush")
+    expect(detectAdapter(makeContext("Charm-Crush/v1.0.0")).name).toBe("crush")
+    expect(detectAdapter(makeContext("Charm-Crush/v99.0.0")).name).toBe("crush")
+  })
+
+  it("returns crushAdapter for Charm-Crush with extra info", () => {
+    const adapter = detectAdapter(makeContext("Charm-Crush/v0.51.2 (https://charm.land/crush)"))
+    expect(adapter).toBe(crushAdapter)
   })
 })
 
@@ -74,6 +94,10 @@ describe("detectAdapter — OpenCode fallback", () => {
   it("does NOT match if factory-cli is not at the start", () => {
     // User-Agent with factory-cli in the middle should not trigger Droid
     expect(detectAdapter(makeContext("my-app factory-cli/0.89.0")).name).toBe("opencode")
+  })
+
+  it("does NOT match 'Charm-Crush' as OpenCode", () => {
+    expect(detectAdapter(makeContext("Charm-Crush/v0.51.2")).name).toBe("crush")
   })
 })
 
@@ -132,5 +156,26 @@ describe("detectAdapter — adapter contracts", () => {
   it("detected opencode adapter has no usesPassthrough — defers to env var", () => {
     const adapter = detectAdapter(makeContext(""))
     expect(adapter.usesPassthrough).toBeUndefined()
+  })
+
+  it("detected crush adapter has no usesPassthrough — defers to env var", () => {
+    const adapter = detectAdapter(makeContext("Charm-Crush/v0.51.2"))
+    expect(adapter.usesPassthrough).toBeUndefined()
+  })
+
+  it("detected crush adapter extracts no CWD (always undefined)", () => {
+    const adapter = detectAdapter(makeContext("Charm-Crush/v0.51.2"))
+    expect(adapter.extractWorkingDirectory({ messages: [], system: [] })).toBeUndefined()
+  })
+
+  it("detected crush adapter returns undefined for session ID", () => {
+    const adapter = detectAdapter(makeContext("Charm-Crush/v0.51.2"))
+    const ctx = { req: { header: () => "any-value" } }
+    expect(adapter.getSessionId(ctx as any)).toBeUndefined()
+  })
+
+  it("detected crush adapter has crush MCP server name", () => {
+    const adapter = detectAdapter(makeContext("Charm-Crush/v0.51.2"))
+    expect(adapter.getMcpServerName()).toBe("crush")
   })
 })
