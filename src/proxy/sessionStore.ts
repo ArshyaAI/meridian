@@ -44,7 +44,7 @@ const DEFAULT_MAX_STORED_SESSIONS = 10_000
 const STALE_LOCK_THRESHOLD_MS = 30_000
 
 function getMaxStoredSessions(): number {
-  const raw = process.env.CLAUDE_PROXY_MAX_STORED_SESSIONS
+  const raw = process.env.MERIDIAN_MAX_STORED_SESSIONS ?? process.env.CLAUDE_PROXY_MAX_STORED_SESSIONS
   if (!raw) return DEFAULT_MAX_STORED_SESSIONS
   const parsed = Number.parseInt(raw, 10)
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_STORED_SESSIONS
@@ -103,12 +103,41 @@ export function setSessionStoreDir(dir: string | null, opts?: { skipLocking?: bo
 
 function getStorePath(): string {
   const dir = sessionDirOverride
+    || process.env.MERIDIAN_SESSION_DIR
     || process.env.CLAUDE_PROXY_SESSION_DIR
-    || join(homedir(), ".cache", "opencode-claude-max-proxy")
+    || getDefaultCacheDir()
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
   }
   return join(dir, "sessions.json")
+}
+
+/**
+ * Resolve the default cache directory, auto-migrating from the old name.
+ * If ~/.cache/opencode-claude-max-proxy exists but ~/.cache/meridian does not,
+ * creates a symlink so sessions are preserved without user action.
+ */
+function getDefaultCacheDir(): string {
+  const newDir = join(homedir(), ".cache", "meridian")
+  const oldDir = join(homedir(), ".cache", "opencode-claude-max-proxy")
+
+  // Already using the new directory
+  if (existsSync(newDir)) return newDir
+
+  // Old directory exists — create symlink for seamless migration
+  if (existsSync(oldDir)) {
+    try {
+      const { symlinkSync } = require("fs")
+      symlinkSync(oldDir, newDir)
+    } catch {
+      // Symlink failed (permissions, already exists race, etc.) — fall back to old dir
+      return oldDir
+    }
+    return newDir
+  }
+
+  // Neither exists — use new name
+  return newDir
 }
 
 function readStore(): Record<string, StoredSession> {

@@ -10,7 +10,7 @@ services:
 
   proxy:
     build: .
-    image: claude-max-proxy
+    image: meridian
     user: "claude"
     depends_on:
       init:

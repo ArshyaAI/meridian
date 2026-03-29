@@ -7,7 +7,7 @@
  *   "Already connected to a transport. Call close() before connecting to a
  *    new transport, or use a separate Protocol instance per connection."
  *
- * Related: https://github.com/rynfar/opencode-claude-max-proxy/issues/XXX
+ * Related: https://github.com/rynfar/meridian/issues/XXX
  */
 
 import { describe, it, expect, mock, beforeEach } from "bun:test"

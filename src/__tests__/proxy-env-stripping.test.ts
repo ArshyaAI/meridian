@@ -6,7 +6,7 @@
  *   1. Infinite loops when the proxy sets these vars for OpenCode
  *   2. The subprocess using a fake "dummy" API key instead of native Claude Max auth
  *
- * Related: https://github.com/rynfar/opencode-claude-max-proxy/issues/XXX
+ * Related: https://github.com/rynfar/meridian/issues/XXX
  */
 
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test"

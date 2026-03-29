@@ -199,7 +199,7 @@ describe("Streaming: single message per response", () => {
       // Turn 2: SDK resets to index=0
       messageStart("msg_turn2"),
       textBlockStart(0),
-      textDelta(0, "The name field is opencode-claude-max-proxy."),
+      textDelta(0, "The name field is meridian."),
       blockStop(0),
       messageDelta("end_turn"),
       messageStop(),
@@ -231,7 +231,7 @@ describe("Streaming: single message per response", () => {
     const turn2Deltas = events.filter(
       (e) => e.event === "content_block_delta" &&
         (e.data as any).delta?.type === "text_delta" &&
-        (e.data as any).delta?.text?.includes("opencode-claude-max-proxy")
+        (e.data as any).delta?.text?.includes("meridian")
     )
     expect(turn2Deltas.length).toBe(1)
     expect((turn2Deltas[0]?.data as any).index).toBe(2)

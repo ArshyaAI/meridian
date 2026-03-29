@@ -89,7 +89,7 @@ cat /tmp/proxy-e2e.log | strings | grep "\[PROXY\]" | tail -5
 **Cleanup.** Each test section is independent. Kill the proxy and clear the session store between sections if you need isolation:
 ```bash
 kill $(lsof -ti :3456) 2>/dev/null
-rm -f ~/.cache/opencode-claude-max-proxy/sessions.json
+rm -f ~/.cache/meridian/sessions.json
 ```
 
 ---
@@ -335,7 +335,7 @@ curl -s http://127.0.0.1:3456/v1/messages \
 
 ## E8: Cross-Proxy Resume
 
-**Verifies:** Sessions survive proxy restart via the shared file store (`~/.cache/opencode-claude-max-proxy/sessions.json`).
+**Verifies:** Sessions survive proxy restart via the shared file store (`~/.cache/meridian/sessions.json`).
 
 ```bash
 # Step 1: Create a session
@@ -351,7 +351,7 @@ curl -s http://127.0.0.1:3456/v1/messages \
   }' > /dev/null
 
 # Verify stored in file
-cat ~/.cache/opencode-claude-max-proxy/sessions.json | python3 -m json.tool | grep -A3 "e2e-persist"
+cat ~/.cache/meridian/sessions.json | python3 -m json.tool | grep -A3 "e2e-persist"
 
 # Step 2: Kill and restart proxy (in-memory caches wiped)
 kill $(lsof -ti :3456); sleep 2
@@ -800,12 +800,12 @@ ANTHROPIC_API_KEY=should-be-stripped ANTHROPIC_BASE_URL=http://should-be-strippe
 
 ## E21: Session Store Pruning
 
-**Verifies:** The file-based session store (`~/.cache/opencode-claude-max-proxy/sessions.json`) evicts the oldest entries when the count exceeds `CLAUDE_PROXY_MAX_STORED_SESSIONS`.
+**Verifies:** The file-based session store (`~/.cache/meridian/sessions.json`) evicts the oldest entries when the count exceeds `CLAUDE_PROXY_MAX_STORED_SESSIONS`.
 
 **Requires proxy restart with env var:**
 ```bash
 kill $(lsof -ti :3456) 2>/dev/null; sleep 1
-rm -f ~/.cache/opencode-claude-max-proxy/sessions.json
+rm -f ~/.cache/meridian/sessions.json
 CLAUDE_PROXY_PORT=3456 CLAUDE_PROXY_MAX_STORED_SESSIONS=3 bun run ./bin/cli.ts > /tmp/proxy-e2e.log 2>&1 &
 # Wait for ready...
 ```
@@ -822,7 +822,7 @@ for i in 1 2 3 4 5; do
 done
 
 # Verify the store is bounded
-cat ~/.cache/opencode-claude-max-proxy/sessions.json | python3 -c "
+cat ~/.cache/meridian/sessions.json | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 print(f'Entries: {len(d)} (should be <= 3)')

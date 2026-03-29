@@ -163,7 +163,7 @@ describe("Max session env parsing", () => {
     try {
       expect(getMaxSessionsLimit()).toBe(1000)
       expect(warnings.length).toBe(1)
-      expect(warnings[0]).toContain("CLAUDE_PROXY_MAX_SESSIONS")
+      expect(warnings[0]).toContain("MERIDIAN_MAX_SESSIONS")
       expect(warnings[0]).toContain("using default 1000")
     } finally {
       console.warn = originalWarn

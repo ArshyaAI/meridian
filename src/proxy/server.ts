@@ -146,7 +146,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // --- Concurrency Control ---
   // Each request spawns an SDK subprocess (cli.js, ~11MB). Spawning multiple
   // simultaneously can crash the process. Serialize SDK queries with a queue.
-  const MAX_CONCURRENT_SESSIONS = parseInt(process.env.CLAUDE_PROXY_MAX_CONCURRENT || "10", 10)
+  const MAX_CONCURRENT_SESSIONS = parseInt((process.env.MERIDIAN_MAX_CONCURRENT ?? process.env.CLAUDE_PROXY_MAX_CONCURRENT) || "10", 10)
   let activeSessions = 0
   const sessionQueue: Array<{ resolve: () => void }> = []
 
@@ -182,7 +182,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         let model = mapModelToClaudeModel(body.model || "sonnet", authStatus?.subscriptionType)
         const stream = body.stream ?? true
         const adapter = detectAdapter(c)
-        const workingDirectory = process.env.CLAUDE_PROXY_WORKDIR || adapter.extractWorkingDirectory(body) || process.cwd()
+        const workingDirectory = (process.env.MERIDIAN_WORKDIR ?? process.env.CLAUDE_PROXY_WORKDIR) || adapter.extractWorkingDirectory(body) || process.cwd()
 
         // Strip env vars that would cause the SDK subprocess to loop back through
         // the proxy instead of using its native Claude Max auth. Also strip vars
@@ -242,7 +242,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // OpenCode parses the Task tool description; other adapters return empty.
       const sdkAgents = adapter.buildSdkAgents?.(body, adapter.getAllowedMcpTools()) ?? {}
       const validAgentNames = Object.keys(sdkAgents)
-      if (process.env.CLAUDE_PROXY_DEBUG && validAgentNames.length > 0) {
+      if ((process.env.MERIDIAN_DEBUG ?? process.env.CLAUDE_PROXY_DEBUG) && validAgentNames.length > 0) {
         claudeLog("debug.agents", { names: validAgentNames, count: validAgentNames.length })
       }
       systemContext += adapter.buildSystemContextAddendum?.(body, sdkAgents) ?? ""
@@ -394,7 +394,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       const adapterPassthrough = adapter.usesPassthrough?.()
       const passthrough = adapterPassthrough !== undefined
         ? adapterPassthrough
-        : Boolean(process.env.CLAUDE_PROXY_PASSTHROUGH)
+        : Boolean((process.env.MERIDIAN_PASSTHROUGH ?? process.env.CLAUDE_PROXY_PASSTHROUGH))
       const capturedToolUses: Array<{ id: string; name: string; input: any }> = []
 
       // In passthrough mode, register OpenCode's tools as MCP tools so Claude
@@ -1149,7 +1149,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           requestModel: undefined,
           mode: "non-stream",
           isResume: false,
-          isPassthrough: Boolean(process.env.CLAUDE_PROXY_PASSTHROUGH),
+          isPassthrough: Boolean((process.env.MERIDIAN_PASSTHROUGH ?? process.env.CLAUDE_PROXY_PASSTHROUGH)),
           lineageType: undefined,
           messageCount: undefined,
           sdkSessionId: undefined,
@@ -1199,7 +1199,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         return c.json({
           status: "degraded",
           error: "Could not verify auth status",
-          mode: process.env.CLAUDE_PROXY_PASSTHROUGH ? "passthrough" : "internal",
+          mode: (process.env.MERIDIAN_PASSTHROUGH ?? process.env.CLAUDE_PROXY_PASSTHROUGH) ? "passthrough" : "internal",
         })
       }
       if (!auth.loggedIn) {
@@ -1216,13 +1216,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           email: auth.email,
           subscriptionType: auth.subscriptionType,
         },
-        mode: process.env.CLAUDE_PROXY_PASSTHROUGH ? "passthrough" : "internal",
+        mode: (process.env.MERIDIAN_PASSTHROUGH ?? process.env.CLAUDE_PROXY_PASSTHROUGH) ? "passthrough" : "internal",
       })
     } catch {
       return c.json({
         status: "degraded",
         error: "Could not verify auth status",
-        mode: process.env.CLAUDE_PROXY_PASSTHROUGH ? "passthrough" : "internal",
+        mode: (process.env.MERIDIAN_PASSTHROUGH ?? process.env.CLAUDE_PROXY_PASSTHROUGH) ? "passthrough" : "internal",
       })
     }
   })
@@ -1265,7 +1265,7 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
       console.error(`  Check with: lsof -i :${finalConfig.port}`)
       console.error(`  Kill it with: kill $(lsof -ti :${finalConfig.port})`)
       console.error(`\nOr use a different port:`)
-      console.error(`  CLAUDE_PROXY_PORT=4567 claude-max-proxy`)
+      console.error(`  MERIDIAN_PORT=4567 meridian`)
     }
   })
 

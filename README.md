@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rynfar/opencode-claude-max-proxy/releases"><img src="https://img.shields.io/github/v/release/rynfar/opencode-claude-max-proxy?style=flat-square&color=6366f1&label=release" alt="Release"></a>
-  <a href="https://www.npmjs.com/package/opencode-claude-max-proxy"><img src="https://img.shields.io/npm/v/opencode-claude-max-proxy?style=flat-square&color=8b5cf6&label=npm" alt="npm"></a>
+  <a href="https://github.com/rynfar/meridian/releases"><img src="https://img.shields.io/github/v/release/rynfar/@rynfar/meridian?style=flat-square&color=6366f1&label=release" alt="Release"></a>
+  <a href="https://www.npmjs.com/package/@rynfar/meridian"><img src="https://img.shields.io/npm/v/@rynfar/meridian?style=flat-square&color=8b5cf6&label=npm" alt="npm"></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-a78bfa?style=flat-square" alt="Platform"></a>
   <a href="#"><img src="https://img.shields.io/badge/license-MIT-c4b5fd?style=flat-square" alt="License"></a>
 </p>
@@ -15,14 +15,14 @@ Meridian turns your Claude Max subscription into a local Anthropic API. Any tool
 
 Harness Claude, your way.
 
-> [!IMPORTANT]
-> **🚀 This project is becoming Meridian.** The npm package will be renamed from `opencode-claude-max-proxy` to `meridian` in an upcoming release. Your current install and all existing configurations will continue to work — no action needed yet.
+> [!NOTE]
+> **Renamed from `opencode-claude-max-proxy`.** If you're upgrading, see [`MIGRATION.md`](MIGRATION.md) for the checklist. Your existing sessions, env vars, and agent configs all continue to work.
 
 ## Quick Start
 
 ```bash
 # Install
-npm install -g opencode-claude-max-proxy
+npm install -g @rynfar/meridian
 
 # Authenticate (one time)
 claude login
@@ -201,7 +201,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 | [Continue](https://github.com/continuedev/continue) | 🔲 Untested | — | Should work — standard Anthropic API |
 | [Aider](https://github.com/paul-gauthier/aider) | 🔲 Untested | — | Should work — standard Anthropic API |
 
-Tested an agent or built a plugin? [Open an issue](https://github.com/rynfar/opencode-claude-max-proxy/issues) and we'll add it.
+Tested an agent or built a plugin? [Open an issue](https://github.com/rynfar/meridian/issues) and we'll add it.
 
 ## Architecture
 
@@ -240,7 +240,7 @@ Sessions map agent conversations to Claude SDK sessions. Meridian classifies eve
 | **Undo** | User rolled back messages | Fork at rollback point |
 | **Diverged** | Completely different conversation | Start fresh |
 
-Sessions are stored in-memory (LRU) and persisted to `~/.cache/opencode-claude-max-proxy/sessions.json` for cross-proxy resume.
+Sessions are stored in-memory (LRU) and persisted to `~/.cache/@rynfar/meridian/sessions.json` for cross-proxy resume.
 
 ### Adding a New Agent
 
@@ -294,7 +294,7 @@ See [`adapters/detect.ts`](src/proxy/adapters/detect.ts) and [`adapters/opencode
 Meridian can be used as a library for building agent plugins and integrations.
 
 ```typescript
-import { startProxyServer } from "opencode-claude-max-proxy"
+import { startProxyServer } from "@rynfar/meridian"
 
 // Start a proxy instance
 const instance = await startProxyServer({

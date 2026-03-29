@@ -10,7 +10,7 @@ import type { RequestMetric, PhaseTiming, TelemetrySummary } from "./types"
 const DEFAULT_CAPACITY = 1000
 
 function getCapacity(): number {
-  const raw = process.env.CLAUDE_PROXY_TELEMETRY_SIZE
+  const raw = process.env.MERIDIAN_TELEMETRY_SIZE ?? process.env.CLAUDE_PROXY_TELEMETRY_SIZE
   if (!raw) return DEFAULT_CAPACITY
   const parsed = Number.parseInt(raw, 10)
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_CAPACITY

@@ -1,5 +1,5 @@
 {
-  "name": "opencode-claude-max-proxy",
+  "name": "@rynfar/meridian",
   "version": "1.21.1",
   "description": "Local Anthropic API powered by your Claude Max subscription. One subscription, every agent.",
   "type": "module",
@@ -59,15 +59,16 @@
     "cline",
     "aider",
     "llm",
-    "coding-assistant"
+    "coding-assistant",
+    "opencode-claude-max-proxy"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rynfar/opencode-claude-max-proxy.git"
+    "url": "git+https://github.com/rynfar/meridian.git"
   },
-  "homepage": "https://github.com/rynfar/opencode-claude-max-proxy#readme",
+  "homepage": "https://github.com/rynfar/meridian#readme",
   "bugs": {
-    "url": "https://github.com/rynfar/opencode-claude-max-proxy/issues"
+    "url": "https://github.com/rynfar/meridian/issues"
   },
   "author": "rynfar",
   "license": "MIT",

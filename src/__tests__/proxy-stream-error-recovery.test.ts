@@ -6,7 +6,7 @@
  * so clients get a well-formed message lifecycle and don't crash accessing
  * usage.input_tokens on an incomplete response.
  *
- * See: https://github.com/rynfar/opencode-claude-max-proxy/issues/168
+ * See: https://github.com/rynfar/meridian/issues/168
  */
 
 import { describe, it, expect, mock, beforeEach } from "bun:test"

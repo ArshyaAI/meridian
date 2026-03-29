@@ -128,7 +128,7 @@ describe("Integration: Full Anthropic API tool loop", () => {
   it("Step 2: Send tool_result → Claude responds with final text", async () => {
     mockMessages = [
       assistantMessage([
-        { type: "text", text: "The project is opencode-claude-max-proxy version 1.1.0" },
+        { type: "text", text: "The project is meridian version 1.1.0" },
       ]),
     ]
 
@@ -143,7 +143,7 @@ describe("Integration: Full Anthropic API tool loop", () => {
           { type: "tool_use", id: "toolu_abc", name: "Read", input: { file_path: "package.json" } },
         ]},
         { role: "user", content: [
-          { type: "tool_result", tool_use_id: "toolu_abc", content: '{"name":"opencode-claude-max-proxy","version":"1.1.0"}' },
+          { type: "tool_result", tool_use_id: "toolu_abc", content: '{"name":"meridian","version":"1.1.0"}' },
         ]},
       ],
     })
@@ -152,10 +152,10 @@ describe("Integration: Full Anthropic API tool loop", () => {
     expect(response.status).toBe(200)
     expect(body.stop_reason).toBe("end_turn")
     expect(body.content[0].type).toBe("text")
-    expect(body.content[0].text).toContain("opencode-claude-max-proxy")
+    expect(body.content[0].text).toContain("meridian")
 
     // Verify the prompt includes the tool result
-    expect(capturedQueryParams.prompt).toContain("opencode-claude-max-proxy")
+    expect(capturedQueryParams.prompt).toContain("meridian")
     expect(capturedQueryParams.prompt).toContain("1.1.0")
   })
 
