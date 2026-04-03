@@ -9,7 +9,7 @@
  *   - GET /v1/sessions/:claudeSessionId/context-usage endpoint
  */
 
-import { describe, it, expect, mock, beforeEach, spyOn } from "bun:test"
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from "bun:test"
 import {
   messageStart,
   textBlockStart,
@@ -19,6 +19,10 @@ import {
   messageStop,
   assistantMessage,
 } from "./helpers"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { setSessionStoreDir, storeSharedSession } from "../proxy/sessionStore"
 
 // ─── captured query params ────────────────────────────────────────────────────
 let capturedOptions: Record<string, unknown> = {}
@@ -168,6 +172,22 @@ describe("SDK param passthrough — header overrides", () => {
     expect(calls.some(msg => msg.includes("malformed x-opencode-thinking"))).toBe(true)
     errorSpy.mockRestore()
   })
+
+  it("falls back to body thinking when x-opencode-thinking header is malformed", async () => {
+    const errorSpy = spyOn(console, "error")
+    const app = createTestApp()
+    const thinking = { type: "enabled", budgetTokens: 1024 }
+
+    const res = await post(app, { ...BASE_BODY, thinking }, {
+      "x-opencode-thinking": "not-valid-json{{{",
+    })
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions.thinking).toEqual(thinking)
+    const calls = errorSpy.mock.calls.map(c => String(c[0]))
+    expect(calls.some(msg => msg.includes("malformed x-opencode-thinking"))).toBe(true)
+    errorSpy.mockRestore()
+  })
 })
 
 // ─── usage logging ────────────────────────────────────────────────────────────
@@ -305,6 +325,38 @@ describe("GET /v1/sessions/:claudeSessionId/context-usage", () => {
     expect(usage.output_tokens).toBe(50)
   })
 
+  it("returns usage for sessions tracked only by fingerprint fallback", async () => {
+    const claudeSessionId = "sess_usage_fingerprint_only"
+    mockMessages = [{
+      type: "assistant",
+      message: {
+        id: "msg_fingerprint",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        model: "claude-haiku-4-5-20251001",
+        stop_reason: "end_turn",
+        usage: { input_tokens: 12, output_tokens: 6 },
+      },
+      parent_tool_use_id: null,
+      uuid: crypto.randomUUID(),
+      session_id: claudeSessionId,
+    }]
+
+    const app = createTestApp()
+    await post(app, BASE_BODY)
+
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/sessions/${claudeSessionId}/context-usage`)
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json() as Record<string, unknown>
+    const usage = body.context_usage as Record<string, unknown>
+    expect(body.session_id).toBe(claudeSessionId)
+    expect(usage.input_tokens).toBe(12)
+    expect(usage.output_tokens).toBe(6)
+  })
+
   it("returns 404 when session exists but has no usage data", async () => {
     // Sessions from before usage tracking was added won't have contextUsage
     const { storeSession } = await import("../proxy/session/cache")
@@ -351,5 +403,45 @@ describe("GET /v1/sessions/:claudeSessionId/context-usage", () => {
       new Request(`http://localhost/v1/sessions/${claudeSessionId}/context-usage`)
     )
     expect(byClaude.status).toBe(200)
+  })
+})
+
+describe("GET /v1/sessions/:claudeSessionId/context-usage — shared store", () => {
+  let tmpSessionDir: string
+
+  beforeEach(() => {
+    tmpSessionDir = mkdtempSync(join(tmpdir(), "sdk-params-session-store-"))
+    setSessionStoreDir(tmpSessionDir)
+    clearSessionCache()
+  })
+
+  afterEach(() => {
+    setSessionStoreDir(null)
+    try { rmSync(tmpSessionDir, { recursive: true, force: true }) } catch {}
+  })
+
+  it("returns usage persisted in the shared session store", async () => {
+    const claudeSessionId = "sess_shared_usage_001"
+    storeSharedSession(
+      "shared-key-usage",
+      claudeSessionId,
+      1,
+      "lineage",
+      ["msg-hash"],
+      [null],
+      { input_tokens: 77, output_tokens: 11 }
+    )
+
+    const app = createTestApp()
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/sessions/${claudeSessionId}/context-usage`)
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as Record<string, unknown>
+    const usage = body.context_usage as Record<string, unknown>
+    expect(body.session_id).toBe(claudeSessionId)
+    expect(usage.input_tokens).toBe(77)
+    expect(usage.output_tokens).toBe(11)
   })
 })

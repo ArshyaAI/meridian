@@ -6,7 +6,13 @@
  */
 
 import { LRUMap } from "../../utils/lruMap"
-import { lookupSharedSession, storeSharedSession, clearSharedSessions, evictSharedSession } from "../sessionStore"
+import {
+  lookupSharedSession,
+  lookupSharedSessionByClaudeId,
+  storeSharedSession,
+  clearSharedSessions,
+  evictSharedSession,
+} from "../sessionStore"
 import { getConversationFingerprint } from "./fingerprint"
 import {
   computeLineageHash,
@@ -145,6 +151,7 @@ export function lookupSession(
         lineageHash: shared.lineageHash || "",
         messageHashes: shared.messageHashes,
         sdkMessageUuids: shared.sdkMessageUuids,
+        contextUsage: shared.contextUsage,
       }
       const result = verifyLineage(state, messages, sessionId, sessionCache)
       if (result.type === "continuation" || result.type === "compaction") {
@@ -172,6 +179,7 @@ export function lookupSession(
         lineageHash: shared.lineageHash || "",
         messageHashes: shared.messageHashes,
         sdkMessageUuids: shared.sdkMessageUuids,
+        contextUsage: shared.contextUsage,
       }
       const result = verifyLineage(state, messages, fp, fingerprintCache)
       if (result.type === "continuation" || result.type === "compaction") {
@@ -184,13 +192,35 @@ export function lookupSession(
 }
 
 /** Look up a session by the Claude SDK session ID returned in responses.
- *  Searches the in-memory cache by `claudeSessionId` value.
- *  Returns the matching state or undefined. */
+ *  Searches both in-memory caches and the shared file store, returning the
+ *  freshest matching state if multiple cache keys point to the same Claude session. */
 export function getSessionByClaudeId(claudeSessionId: string): SessionState | undefined {
-  for (const state of sessionCache.values()) {
-    if (state.claudeSessionId === claudeSessionId) return state
+  let newest: SessionState | undefined
+
+  const consider = (state: SessionState | undefined) => {
+    if (!state || state.claudeSessionId !== claudeSessionId) return
+    if (!newest || state.lastAccess > newest.lastAccess) {
+      newest = state
+    }
   }
-  return undefined
+
+  for (const state of sessionCache.values()) consider(state)
+  for (const state of fingerprintCache.values()) consider(state)
+
+  const shared = lookupSharedSessionByClaudeId(claudeSessionId)
+  if (shared) {
+    consider({
+      claudeSessionId: shared.claudeSessionId,
+      lastAccess: shared.lastUsedAt,
+      messageCount: shared.messageCount || 0,
+      lineageHash: shared.lineageHash || "",
+      messageHashes: shared.messageHashes,
+      sdkMessageUuids: shared.sdkMessageUuids,
+      contextUsage: shared.contextUsage,
+    })
+  }
+
+  return newest
 }
 
 /** Store a session mapping with lineage hash and SDK UUIDs for divergence detection.
@@ -223,5 +253,15 @@ export function storeSession(
   if (fp) fingerprintCache.set(fp, state)
   // Shared file store (cross-proxy resume)
   const key = sessionId || fp
-  if (key) storeSharedSession(key, claudeSessionId, state.messageCount, lineageHash, messageHashes, sdkMessageUuids)
+  if (key) {
+    storeSharedSession(
+      key,
+      claudeSessionId,
+      state.messageCount,
+      lineageHash,
+      messageHashes,
+      sdkMessageUuids,
+      contextUsage
+    )
+  }
 }

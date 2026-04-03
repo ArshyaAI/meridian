@@ -246,15 +246,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const effort = effortHeader
           || body.effort
           || undefined
-        let thinking: QueryContext['thinking'] | undefined
-        if (thinkingHeader) {
+        let thinking: QueryContext['thinking'] | undefined = body.thinking || undefined
+        if (thinkingHeader !== undefined) {
           try {
             thinking = JSON.parse(thinkingHeader) as QueryContext["thinking"]
           } catch (e) {
             console.error(`[PROXY] ${requestMeta.requestId} ignoring malformed x-opencode-thinking header: ${e instanceof Error ? e.message : String(e)}`)
           }
-        } else {
-          thinking = body.thinking || undefined
         }
         const parsedBudget = taskBudgetHeader ? Number.parseInt(taskBudgetHeader, 10) : NaN
         const taskBudget = Number.isFinite(parsedBudget)

@@ -23,6 +23,7 @@ import {
 } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import type { TokenUsage } from "./session/lineage"
 
 export interface StoredSession {
   claudeSessionId: string
@@ -35,6 +36,8 @@ export interface StoredSession {
   messageHashes?: string[]
   /** Per-message SDK assistant UUIDs for undo rollback (null for user messages) */
   sdkMessageUuids?: Array<string | null>
+  /** Last observed token usage for this Claude session */
+  contextUsage?: TokenUsage
 }
 
 // No time-based session expiry. SDK sessions persist on Anthropic's side
@@ -174,7 +177,29 @@ export function lookupSharedSession(key: string): StoredSession | undefined {
   return store[key]
 }
 
-export function storeSharedSession(key: string, claudeSessionId: string, messageCount?: number, lineageHash?: string, messageHashes?: string[], sdkMessageUuids?: Array<string | null>): void {
+export function lookupSharedSessionByClaudeId(claudeSessionId: string): StoredSession | undefined {
+  const sessions = Object.values(readStore())
+  let newest: StoredSession | undefined
+
+  for (const session of sessions) {
+    if (session.claudeSessionId !== claudeSessionId) continue
+    if (!newest || session.lastUsedAt > newest.lastUsedAt) {
+      newest = session
+    }
+  }
+
+  return newest
+}
+
+export function storeSharedSession(
+  key: string,
+  claudeSessionId: string,
+  messageCount?: number,
+  lineageHash?: string,
+  messageHashes?: string[],
+  sdkMessageUuids?: Array<string | null>,
+  contextUsage?: TokenUsage
+): void {
   const path = getStorePath()
   const lockPath = `${path}.lock`
   const hasLock = skipLocking ? false : acquireLock(lockPath)
@@ -192,6 +217,7 @@ export function storeSharedSession(key: string, claudeSessionId: string, message
       lineageHash: lineageHash ?? existing?.lineageHash,
       messageHashes: messageHashes ?? existing?.messageHashes,
       sdkMessageUuids: sdkMessageUuids ?? existing?.sdkMessageUuids,
+      contextUsage: contextUsage ?? existing?.contextUsage,
     }
 
     // Prune oldest entries if over capacity (count-based, not time-based)
