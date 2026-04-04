@@ -11,7 +11,7 @@
 
 ---
 
-Meridian turns your Claude Max subscription into a local Anthropic API. Any tool that speaks the Anthropic or OpenAI protocol — OpenCode, Crush, Cline, Aider, Pi, Droid, Open WebUI — connects to Meridian and gets Claude, powered by your existing subscription through the official Claude Code SDK.
+Meridian turns your Claude Max subscription into a local Anthropic API. Any tool that speaks the Anthropic or OpenAI protocol — OpenCode, OpenClaw, Crush, Cline, Aider, Pi, Droid, Open WebUI — connects to Meridian and gets Claude, powered by your existing subscription through the official Claude Code SDK.
 
 > [!NOTE]
 > **Renamed from `opencode-claude-max-proxy`.** If you're upgrading, see [`MIGRATION.md`](MIGRATION.md) for the checklist. Your existing sessions, env vars, and agent configs all continue to work.
