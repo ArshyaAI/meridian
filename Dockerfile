@@ -10,8 +10,7 @@ COPY package.json bun.lock* ./
 # loader paths) — yields ENOENT despite the file being present. The
 # install is performed in the runtime stage instead so it matches the
 # runtime libc.
-RUN --mount=type=cache,target=/root/.bun \
-    bun install --ignore-scripts
+RUN bun install --ignore-scripts
 
 COPY tsconfig.json* ./
 COPY bin/ ./bin/
