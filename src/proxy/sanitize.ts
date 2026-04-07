@@ -110,7 +110,86 @@ export function maybeScrubSystemContext(systemContext: string): string {
     // Helps distinguish "scrub off" from "scrub on but input clean".
     const delta = systemContext.length - scrubbed.length;
     console.error(
-      `[sanitize] scrubbed vendor="${vendor}" input_len=${systemContext.length} delta=${delta}`,
+      `[sanitize] scrubbed systemContext vendor="${vendor}" input_len=${systemContext.length} delta=${delta}`,
+    );
+  }
+  return scrubbed;
+}
+
+/**
+ * Recursively scrub vendor references from a JSON-serializable value.
+ *
+ * Walks arrays and objects, rewriting every string leaf. Used to scrub
+ * the entire request body (messages, tools, system prompt blocks) so
+ * fingerprints hidden in conversation history or tool descriptions are
+ * also neutralized before the request leaves Meridian.
+ *
+ * CRITICAL: this mutates strings at every depth but preserves structure,
+ * object identity is NOT preserved — it returns fresh containers. Callers
+ * should replace the original value with the return.
+ */
+export function scrubVendorReferencesDeep<T>(
+  value: T,
+  vendor: VendorScrubTarget = "openclaw",
+): T {
+  if (typeof value === "string") {
+    return scrubVendorReferences(value, vendor) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) =>
+      scrubVendorReferencesDeep(v, vendor),
+    ) as unknown as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = scrubVendorReferencesDeep(v, vendor);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+/**
+ * Scrub vendor references from the entire Anthropic Messages API request
+ * body when enabled by env. Covers `system`, `messages[*].content`,
+ * `tools[*].description`, and any other string leaf in the request.
+ *
+ * Returns a new body object with all string leaves rewritten. Returns
+ * the original body unchanged when scrubbing is disabled.
+ *
+ * NOTE: This is invoked BEFORE systemContext extraction in server.ts so
+ * the downstream `maybeScrubSystemContext` call becomes a no-op (the
+ * string is already clean). Kept as a belt-and-suspenders safety measure.
+ */
+export function maybeScrubRequestBody<T extends Record<string, unknown>>(
+  body: T,
+): T {
+  const vendor = getVendorScrubFromEnv();
+  if (!vendor) return body;
+  // Measure the sensitive fields for telemetry before/after.
+  const sys = body["system"];
+  const msgs = body["messages"];
+  const tools = body["tools"];
+  const before =
+    (typeof sys === "string" ? sys.length : JSON.stringify(sys ?? "").length) +
+    JSON.stringify(msgs ?? "").length +
+    JSON.stringify(tools ?? "").length;
+  const scrubbed = scrubVendorReferencesDeep(body, vendor);
+  const after = (() => {
+    const s = scrubbed["system"];
+    const m = scrubbed["messages"];
+    const t = scrubbed["tools"];
+    return (
+      (typeof s === "string" ? s.length : JSON.stringify(s ?? "").length) +
+      JSON.stringify(m ?? "").length +
+      JSON.stringify(t ?? "").length
+    );
+  })();
+  if (after !== before) {
+    const delta = before - after;
+    console.error(
+      `[sanitize] scrubbed request body vendor="${vendor}" before=${before} delta=${delta}`,
     );
   }
   return scrubbed;

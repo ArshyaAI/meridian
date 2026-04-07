@@ -54,7 +54,7 @@ import {
   buildModelList,
 } from "./openai";
 import { getLastUserMessage } from "./messages";
-import { maybeScrubSystemContext } from "./sanitize";
+import { maybeScrubSystemContext, maybeScrubRequestBody } from "./sanitize";
 import { detectAdapter } from "./adapters/detect";
 import { buildQueryOptions, type QueryContext } from "./query";
 import {
@@ -290,7 +290,20 @@ export function createProxyServer(
         // Hoist adapter detection before try so it's available in the catch block for telemetry
         const adapter = detectAdapter(c);
         try {
-          const body = await c.req.json();
+          let body = await c.req.json();
+
+          // Vendor-string sanitization — deep scrub of the whole request body.
+          //
+          // The shallow systemContext scrub further down only touches body.system.
+          // Anthropic's OpenClaw-string filter also fires on occurrences inside
+          // messages[*].content and tools[*].description — for OpenClaw requests
+          // with long conversation history (msgCount=49, 40KB system + tools
+          // carrying more "OpenClaw" substrings), scrubbing just the system
+          // field is insufficient. This walks every string leaf in the body
+          // and rewrites "openclaw" case-insensitively.
+          //
+          // Opt-in via MERIDIAN_SCRUB_VENDOR=openclaw. No-op when unset.
+          body = maybeScrubRequestBody(body);
 
           // Validate required fields
           if (!Array.isArray(body.messages)) {
