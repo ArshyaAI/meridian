@@ -104,5 +104,14 @@ export function scrubVendorReferences(
 export function maybeScrubSystemContext(systemContext: string): string {
   const vendor = getVendorScrubFromEnv();
   if (!vendor) return systemContext;
-  return scrubVendorReferences(systemContext, vendor);
+  const scrubbed = scrubVendorReferences(systemContext, vendor);
+  if (scrubbed !== systemContext) {
+    // Telemetry log — counts how often the scrub actually rewrites content.
+    // Helps distinguish "scrub off" from "scrub on but input clean".
+    const delta = systemContext.length - scrubbed.length;
+    console.error(
+      `[sanitize] scrubbed vendor="${vendor}" input_len=${systemContext.length} delta=${delta}`,
+    );
+  }
+  return scrubbed;
 }
