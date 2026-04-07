@@ -54,6 +54,7 @@ import {
   buildModelList,
 } from "./openai";
 import { getLastUserMessage } from "./messages";
+import { maybeScrubSystemContext } from "./sanitize";
 import { detectAdapter } from "./adapters/detect";
 import { buildQueryOptions, type QueryContext } from "./query";
 import {
@@ -506,6 +507,24 @@ export function createProxyServer(
           }
           systemContext +=
             adapter.buildSystemContextAddendum?.(body, sdkAgents) ?? "";
+
+          // Vendor-string sanitization (fork-only patch).
+          //
+          // Anthropic performs server-side prompt-content filtering on the
+          // literal string "OpenClaw" in system prompts (reproduced via curl
+          // by danielfariati in #255 and TheDuctTapeDev in #277). When
+          // MERIDIAN_SCRUB_VENDOR=openclaw is set, this rewrites the
+          // substring case-insensitively before the prompt leaves Meridian.
+          // No-op when the env var is unset, so this is safe to ship as a
+          // default-off escape hatch.
+          //
+          // Applied AFTER the adapter addendum so any addendum-injected
+          // references are also caught. Applied BEFORE the prompt is passed
+          // to query() so all four call sites (lines ~818, ~882, ~1321, ~1379)
+          // see the scrubbed value.
+          //
+          // See: src/proxy/sanitize.ts for the rationale and tests.
+          systemContext = maybeScrubSystemContext(systemContext);
 
           // When resuming, only send new messages the SDK doesn't have.
           const allMessages = body.messages || [];
