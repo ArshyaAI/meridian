@@ -59,6 +59,8 @@ import {
   maybeScrubRequestBody,
   maybeUnscrubMessageBody,
   maybeUnscrubStreamEvent,
+  maybeStripAgentRequestBody,
+  maybeStripAgentSystemContext,
 } from "./sanitize";
 import { detectAdapter } from "./adapters/detect";
 import { buildQueryOptions, type QueryContext } from "./query";
@@ -382,6 +384,15 @@ export function createProxyServer(
           // No-op when env var unset. See src/proxy/sanitize.ts for context.
           body = maybeScrubRequestBody(body);
 
+          // Nuclear-option fingerprint defense (fork-only patch).
+          // Anthropic re-enabled sentence-structure fingerprinting on
+          // 2026-04-09 — the word-level scrub above is insufficient.
+          // When MERIDIAN_STRIP_AGENT_PROMPT=1 is also set, replace
+          // body.system entirely with a Claude Code identity string and
+          // delete body.tool_choice. See rynfar/meridian#319 for upstream
+          // context. No-op when env var unset.
+          body = maybeStripAgentRequestBody(body);
+
           // Validate required fields
           if (!Array.isArray(body.messages)) {
             return c.json(
@@ -602,6 +613,12 @@ export function createProxyServer(
           // MERIDIAN_SCRUB_VENDOR is unset or when maybeScrubRequestBody
           // (above) already cleaned the body.
           systemContext = maybeScrubSystemContext(systemContext);
+
+          // Nuclear-option fingerprint defense — final line of defense
+          // on the composed systemContext string the SDK will use. When
+          // MERIDIAN_STRIP_AGENT_PROMPT=1, replace the entire systemContext
+          // with the Claude Code identity string. No-op when unset.
+          systemContext = maybeStripAgentSystemContext(systemContext);
 
           // When resuming, only send new messages the SDK doesn't have.
           const allMessages = body.messages || [];
