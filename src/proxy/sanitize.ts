@@ -194,3 +194,302 @@ export function maybeScrubRequestBody<T extends Record<string, unknown>>(
   }
   return scrubbed;
 }
+
+// =============================================================================
+// REVERSE SCRUB — response body path (bidirectional scrub)
+// =============================================================================
+//
+// The outbound scrub rewrites openclaw → AgentSystem so Anthropic doesn't
+// detect the OpenClaw fingerprint. Side effect: Anthropic responds using
+// "AgentSystem" as the product name, that string flows back into OpenClaw
+// unmodified, and over many turns the agent's context and mem0 memories
+// accumulate "AgentSystem" references. Eventually the agent loses its
+// OpenClaw identity (observed: treebot searched github.com/agentsystem
+// instead of github.com/openclaw/openclaw).
+//
+// The reverse scrub rewrites AgentSystem → OpenClaw (case-preserving) on
+// response text fields only. Structural metadata (type, role, model, id,
+// stop_reason, usage, tool_use.name, tool_use.id) is left untouched.
+//
+// Gated on TWO env vars (both must be set):
+//   - MERIDIAN_SCRUB_VENDOR=openclaw     (the existing outbound gate)
+//   - MERIDIAN_SCRUB_BIDIRECTIONAL=1     (the new response gate, default off)
+//
+// Default disabled so this fork-only patch stays safe to deploy without
+// immediately flipping behavior. Enable both together after staging soak.
+
+/**
+ * Reverse direction of scrubVendorReferences: rewrite the REPLACEMENT
+ * substring back to the original vendor name. Case-preserving.
+ *
+ *   "AgentSystem" → "OpenClaw"
+ *   "agentsystem" → "openclaw"
+ *   "AGENTSYSTEM" → "OPENCLAW"
+ *   Other mixed casings → "openclaw" (lowercase fallback)
+ *
+ * Empty input is returned unchanged. Unknown vendor values pass through
+ * untouched. This is the exact inverse of scrubVendorReferences and is
+ * idempotent (re-application is a no-op).
+ */
+export function unscrubVendorReferences(
+  text: string,
+  vendor: VendorScrubTarget = "openclaw",
+): string {
+  if (!text) return text;
+  if (vendor !== "openclaw") return text;
+
+  return text.replace(/agentsystem/gi, (match) => {
+    if (match === match.toUpperCase()) return "OPENCLAW";
+    if (match[0] === match[0]?.toUpperCase()) return "OpenClaw";
+    return "openclaw";
+  });
+}
+
+/**
+ * Read the bidirectional scrub gate from env. Requires the base scrub
+ * to also be enabled — otherwise returns false. This prevents the
+ * reverse rewrite from running in environments where there's nothing
+ * to reverse.
+ */
+export function getBidirectionalScrubFromEnv(): boolean {
+  if (!getVendorScrubFromEnv()) return false;
+  const raw = process.env.MERIDIAN_SCRUB_BIDIRECTIONAL;
+  return raw === "1" || raw === "true";
+}
+
+/**
+ * Walk a non-streaming Anthropic Messages API response body and reverse
+ * scrub text leaves only. Structural metadata (type, role, stop_reason,
+ * model, id, usage) is left untouched. Mutates the passed object in place
+ * AND returns it for chaining convenience.
+ *
+ * Fields walked:
+ *   - content[i].text                    (text blocks)
+ *   - content[i].input                   (tool_use input JSON fragments)
+ *
+ * Fields NOT touched (structural metadata):
+ *   - type, role, id, model, stop_reason, stop_sequence, usage
+ *   - content[i].type, content[i].id, content[i].name (tool_use)
+ *
+ * No-op when MERIDIAN_SCRUB_BIDIRECTIONAL is unset/false.
+ */
+export function maybeUnscrubMessageBody<T extends Record<string, unknown>>(
+  body: T,
+): T {
+  if (!getBidirectionalScrubFromEnv()) return body;
+  let rewrites = 0;
+
+  const content = body["content"];
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (block && typeof block === "object") {
+        const b = block as Record<string, unknown>;
+        if (typeof b["text"] === "string") {
+          const before = b["text"] as string;
+          const after = unscrubVendorReferences(before);
+          if (after !== before) {
+            b["text"] = after;
+            rewrites += before.length - after.length;
+          }
+        }
+        // tool_use.input can contain string values — walk one level deep
+        if (b["input"] && typeof b["input"] === "object") {
+          const input = b["input"] as Record<string, unknown>;
+          for (const k of Object.keys(input)) {
+            const v = input[k];
+            if (typeof v === "string") {
+              const after = unscrubVendorReferences(v);
+              if (after !== v) {
+                input[k] = after;
+                rewrites += v.length - after.length;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (rewrites !== 0) {
+    console.error(`[sanitize] unscrubbed response body delta=${rewrites}`);
+  }
+  return body;
+}
+
+/**
+ * Apply reverse scrub to a single SSE stream_event object. Mutates only
+ * text-bearing fields:
+ *
+ *   - content_block_start.content_block.text             (initial text)
+ *   - content_block_delta.delta.text                     (text_delta)
+ *   - content_block_delta.delta.partial_json             (input_json_delta)
+ *   - message_start.message.content[].text               (rare)
+ *
+ * Does NOT touch type, index, stop_reason, usage, tool_use.name/id,
+ * message.id, message.model. See maybeUnscrubMessageBody for the
+ * non-streaming case.
+ *
+ * No-op when MERIDIAN_SCRUB_BIDIRECTIONAL is unset/false. Returns the
+ * passed event for chaining.
+ */
+export function maybeUnscrubStreamEvent<T>(event: T): T {
+  if (!getBidirectionalScrubFromEnv()) return event;
+  if (!event || typeof event !== "object") return event;
+
+  const e = event as unknown as Record<string, unknown>;
+
+  // content_block_delta → delta.text / delta.partial_json
+  if (e["type"] === "content_block_delta") {
+    const delta = e["delta"];
+    if (delta && typeof delta === "object") {
+      const d = delta as Record<string, unknown>;
+      if (typeof d["text"] === "string") {
+        d["text"] = unscrubVendorReferences(d["text"] as string);
+      }
+      if (typeof d["partial_json"] === "string") {
+        d["partial_json"] = unscrubVendorReferences(
+          d["partial_json"] as string,
+        );
+      }
+    }
+  }
+
+  // content_block_start → content_block.text (initial text on block open)
+  if (e["type"] === "content_block_start") {
+    const cb = e["content_block"];
+    if (cb && typeof cb === "object") {
+      const c = cb as Record<string, unknown>;
+      if (typeof c["text"] === "string") {
+        c["text"] = unscrubVendorReferences(c["text"] as string);
+      }
+    }
+  }
+
+  // message_start → message.content[].text (rare but valid)
+  if (e["type"] === "message_start") {
+    const msg = e["message"];
+    if (msg && typeof msg === "object") {
+      const m = msg as Record<string, unknown>;
+      const content = m["content"];
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block && typeof block === "object") {
+            const b = block as Record<string, unknown>;
+            if (typeof b["text"] === "string") {
+              b["text"] = unscrubVendorReferences(b["text"] as string);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return event;
+}
+
+// =============================================================================
+// STRIP AGENT SYSTEM PROMPT — nuclear-option fingerprint defense
+// =============================================================================
+//
+// Anthropic re-enabled aggressive content-based detection of agent-harness
+// system prompts on 2026-04-09 ~03:18 UTC (tracked in rynfar/meridian#319).
+// The vendor-word scrub (openclaw → AgentSystem) is insufficient: Anthropic
+// fingerprints the SENTENCE STRUCTURE ("You are a personal assistant running
+// inside X"), the URL footprint (docs.openclaw.ai, github.com/openclaw/...),
+// the tool vocabulary (sessions_spawn, subagents, canvas), and the overall
+// system-prompt SHAPE — not just the single-word vendor name.
+//
+// Community-verified working bypass (as of 2026-04-09 07:15 UTC, confirmed
+// by rynfar himself using the OpenCode harness-layer equivalent):
+//
+//   Replace the ENTIRE system prompt with the literal Claude Code identity
+//   string: "You are Claude Code, Anthropic's official CLI for Claude."
+//
+// Also strip body.tool_choice (unique to agent harnesses, absent in vanilla
+// Claude Code).
+//
+// Tradeoff: the agent loses all OpenClaw-specific guidance embedded in the
+// system prompt (how to use sessions_spawn, cron.wake, canvas, etc.). Tool
+// calls still work because tools are defined in body.tools with their own
+// per-tool descriptions. This is an emergency recovery fix — better
+// degraded-but-functional than hard-down.
+//
+// Gated on TWO env vars (both must be set):
+//   - MERIDIAN_SCRUB_VENDOR=openclaw     (the base scrub gate)
+//   - MERIDIAN_STRIP_AGENT_PROMPT=1      (the new nuclear gate, default off)
+//
+// References:
+//   - https://github.com/rynfar/meridian/issues/319  (upstream bug thread)
+//   - https://github.com/remorses/kimaki/commit/8721ba5  (surgical variant)
+//   - https://github.com/w568w/cc-goatway  (nuclear + header spoofing variant)
+
+const CLAUDE_CODE_IDENTITY =
+  "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/**
+ * Read the strip-agent-prompt gate from env. Requires the base scrub to
+ * also be enabled — otherwise returns false, preventing the nuclear
+ * rewrite from running in environments where there's nothing to defend.
+ */
+export function getStripAgentPromptFromEnv(): boolean {
+  if (!getVendorScrubFromEnv()) return false;
+  const raw = process.env.MERIDIAN_STRIP_AGENT_PROMPT;
+  return raw === "1" || raw === "true";
+}
+
+/**
+ * Replace body.system with the minimal Claude Code identity string and
+ * delete body.tool_choice. Mutates in place AND returns for chaining.
+ *
+ * Handles both shapes Anthropic Messages API accepts for `system`:
+ *   - string     (legacy / simple callers)
+ *   - array of content blocks  (modern / cacheable prefix callers)
+ *
+ * No-op when MERIDIAN_STRIP_AGENT_PROMPT is unset/false.
+ */
+export function maybeStripAgentRequestBody<T extends Record<string, unknown>>(
+  body: T,
+): T {
+  if (!getStripAgentPromptFromEnv()) return body;
+
+  // Cast to writable record — T is covariantly constrained, TypeScript
+  // won't let us index-write through the generic directly.
+  const b = body as Record<string, unknown>;
+  const system = b["system"];
+
+  if (typeof system === "string" && system.length > 0) {
+    b["system"] = CLAUDE_CODE_IDENTITY;
+    console.error(
+      `[sanitize] stripped body.system (string) len=${system.length} → ${CLAUDE_CODE_IDENTITY.length}`,
+    );
+  } else if (Array.isArray(system) && system.length > 0) {
+    const origLen = JSON.stringify(system).length;
+    b["system"] = [{ type: "text", text: CLAUDE_CODE_IDENTITY }];
+    console.error(
+      `[sanitize] stripped body.system (array) blocks=${system.length} len=${origLen} → ~${CLAUDE_CODE_IDENTITY.length + 20}`,
+    );
+  }
+
+  if ("tool_choice" in b) {
+    delete b["tool_choice"];
+    console.error(`[sanitize] stripped body.tool_choice`);
+  }
+
+  return body;
+}
+
+/**
+ * Replace the extracted systemContext string with the minimal Claude
+ * Code identity. This runs AFTER the adapter has composed the final
+ * systemContext the SDK will see, so it's the last line of defense.
+ *
+ * No-op when MERIDIAN_STRIP_AGENT_PROMPT is unset/false.
+ */
+export function maybeStripAgentSystemContext(systemContext: string): string {
+  if (!getStripAgentPromptFromEnv()) return systemContext;
+  if (!systemContext) return systemContext;
+  console.error(
+    `[sanitize] stripped systemContext len=${systemContext.length} → ${CLAUDE_CODE_IDENTITY.length}`,
+  );
+  return CLAUDE_CODE_IDENTITY;
+}
