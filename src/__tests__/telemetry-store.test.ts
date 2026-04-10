@@ -85,6 +85,16 @@ describe("MemoryTelemetryStore", () => {
     expect(filtered[0]!.requestId).toBe("new")
   })
 
+  it("returns the latest successful metric for an SDK session", () => {
+    store.record(makeMetric({ requestId: "older-ok", sdkSessionId: "sdk-1", totalDurationMs: 100 }))
+    store.record(makeMetric({ requestId: "latest-error", sdkSessionId: "sdk-1", error: "api_error", totalDurationMs: 200 }))
+    store.record(makeMetric({ requestId: "other-session", sdkSessionId: "sdk-2", totalDurationMs: 300 }))
+
+    const metric = store.getLastForSession("sdk-1")
+
+    expect(metric?.requestId).toBe("older-ok")
+  })
+
   it("clears all metrics", () => {
     store.record(makeMetric())
     store.record(makeMetric())

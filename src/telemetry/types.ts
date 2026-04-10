@@ -165,6 +165,8 @@ export interface ITelemetryStore {
     since?: number
     model?: string
   }): RequestMetric[]
+  /** Find the latest successful metric for a given SDK session. */
+  getLastForSession(sdkSessionId: string): RequestMetric | undefined
   /** Compute aggregate statistics over a time window. */
   summarize(windowMs?: number): TelemetrySummary
   /** Clear all stored metrics. */
