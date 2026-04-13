@@ -513,7 +513,15 @@ export function createProxyServer(
             );
           }
 
-          const effort = effortHeader || body.effort || undefined;
+          // Effort override: inject effort for Opus models when OC doesn't send one.
+          // OC v2026.4.5 maps "adaptive" → "medium" which is WORSE than Anthropic's
+          // default "high". This env var lets us force "max" for Opus.
+          const envEffort = process.env.MERIDIAN_OPUS_EFFORT;
+          const isOpusModel = model === "opus" || model === "opus[1m]";
+          const effort =
+            effortHeader ||
+            body.effort ||
+            (envEffort && isOpusModel ? envEffort : undefined);
           let thinking: QueryContext["thinking"] | undefined =
             body.thinking || undefined;
           if (thinkingHeader !== undefined) {
