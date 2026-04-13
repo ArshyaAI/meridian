@@ -45,6 +45,7 @@ src/
 │   ├── models.ts              ← Model mapping, Claude executable resolution
 │   ├── tools.ts               ← Tool blocking lists, MCP server name, allowed tools
 │   ├── messages.ts            ← Content normalization, message parsing
+│   ├── sanitize.ts            ← Vendor-string scrub/strip (fork-only, gated on env vars)
 │   ├── types.ts               ← ProxyConfig, ProxyInstance, ProxyServer types
 │   ├── session/
 │   │   ├── index.ts           ← Barrel export
@@ -134,23 +135,23 @@ Agent-specific behavior is isolated behind the `AgentAdapter` interface (`adapte
 
 ### What the Adapter Controls
 
-| Method | What It Does |
-|--------|-------------|
-| `getSessionId(c)` | Extract session ID from request headers |
-| `extractWorkingDirectory(body)` | Parse working directory from request body |
-| `normalizeContent(content)` | Normalize message content for hashing |
-| `getBlockedBuiltinTools()` | SDK tools replaced by agent's MCP equivalents |
-| `getAgentIncompatibleTools()` | SDK tools with no agent equivalent |
-| `getMcpServerName()` | MCP server name for tool registration |
-| `getAllowedMcpTools()` | MCP tools allowed through the proxy |
+| Method                          | What It Does                                  |
+| ------------------------------- | --------------------------------------------- |
+| `getSessionId(c)`               | Extract session ID from request headers       |
+| `extractWorkingDirectory(body)` | Parse working directory from request body     |
+| `normalizeContent(content)`     | Normalize message content for hashing         |
+| `getBlockedBuiltinTools()`      | SDK tools replaced by agent's MCP equivalents |
+| `getAgentIncompatibleTools()`   | SDK tools with no agent equivalent            |
+| `getMcpServerName()`            | MCP server name for tool registration         |
+| `getAllowedMcpTools()`          | MCP tools allowed through the proxy           |
 
 ### Remaining OpenCode-Specific Code (Not Yet in Adapter)
 
-| Logic | Location | Status |
-|-------|----------|--------|
-| `buildAgentDefinitions` | `agentDefs.ts` | Parses OpenCode Task tool format. To be adapter method. |
-| Passthrough mode | `passthroughTools.ts` | Agent-agnostic but OpenCode-motivated. Keep as-is. |
-| `ALLOWED_MCP_TOOLS` usage in `server.ts` | Line ~176 | Used for `buildAgentDefinitions`. Move when adapter handles agent defs. |
+| Logic                                    | Location              | Status                                                                  |
+| ---------------------------------------- | --------------------- | ----------------------------------------------------------------------- |
+| `buildAgentDefinitions`                  | `agentDefs.ts`        | Parses OpenCode Task tool format. To be adapter method.                 |
+| Passthrough mode                         | `passthroughTools.ts` | Agent-agnostic but OpenCode-motivated. Keep as-is.                      |
+| `ALLOWED_MCP_TOOLS` usage in `server.ts` | Line ~176             | Used for `buildAgentDefinitions`. Move when adapter handles agent defs. |
 
 ## Session Management
 
@@ -165,22 +166,22 @@ Both are LRU with coordinated eviction — evicting from one removes the corresp
 
 Every request verifies that incoming messages are a valid continuation of the cached session:
 
-| Classification | Condition | Action |
-|---------------|-----------|--------|
-| **Continuation** | Prefix hash matches stored | Resume normally |
-| **Compaction** | Suffix preserved, beginning changed | Resume (agent summarized old messages) |
-| **Undo** | Prefix preserved, suffix changed | Fork at rollback point |
-| **Diverged** | No meaningful overlap | Start fresh session |
+| Classification   | Condition                           | Action                                 |
+| ---------------- | ----------------------------------- | -------------------------------------- |
+| **Continuation** | Prefix hash matches stored          | Resume normally                        |
+| **Compaction**   | Suffix preserved, beginning changed | Resume (agent summarized old messages) |
+| **Undo**         | Prefix preserved, suffix changed    | Fork at rollback point                 |
+| **Diverged**     | No meaningful overlap               | Start fresh session                    |
 
 ## Testing Strategy
 
 Three tiers, each catching different classes of bugs:
 
-| Tier | Files | SDK | Speed | Runs In |
-|------|-------|-----|-------|---------|
-| **Unit** | `src/__tests__/*-unit.test.ts` | None | Fast | CI (`bun test`) |
-| **Integration** | `src/__tests__/proxy-*.test.ts` | Mocked | Fast | CI (`bun test`) |
-| **E2E** | `E2E.md` | Real (Claude Max) | Slow | Manual, pre-release |
+| Tier            | Files                           | SDK               | Speed | Runs In             |
+| --------------- | ------------------------------- | ----------------- | ----- | ------------------- |
+| **Unit**        | `src/__tests__/*-unit.test.ts`  | None              | Fast  | CI (`bun test`)     |
+| **Integration** | `src/__tests__/proxy-*.test.ts` | Mocked            | Fast  | CI (`bun test`)     |
+| **E2E**         | `E2E.md`                        | Real (Claude Max) | Slow  | Manual, pre-release |
 
 - **Unit tests**: Pure functions, no mocks, no I/O.
 - **Integration tests**: HTTP layer with mocked SDK. Deterministic.
@@ -202,13 +203,17 @@ E2E tests (`E2E.md`) should be run before releases or after major refactors.
 ## Adding New Code
 
 ### New pure logic (no I/O, no state)
+
 → Create a new leaf module in `src/proxy/`. Add unit tests.
 
 ### New stateful logic (caches, stores)
+
 → Add to the appropriate existing module (`session/cache.ts`, `sessionStore.ts`). Don't create new caches elsewhere.
 
 ### New HTTP endpoints
+
 → Add to `server.ts`. Keep route handlers thin — delegate to extracted modules.
 
 ### New agent support
+
 → Implement `AgentAdapter` in `src/proxy/adapters/`. See `adapters/opencode.ts` for reference. Do not hardcode agent-specific logic in leaf modules.
