@@ -485,17 +485,32 @@ export function createProxyServer(
             );
           }
 
-          // Fork: Opus effort override. OC maps "adaptive" → "medium" which is
-          // worse than Anthropic's default "high". MERIDIAN_OPUS_EFFORT lets us
-          // force "max" for Opus models.
+          // Fork: Opus effort override. OC maps "adaptive" → "medium" which
+          // caps thinking at ~800 chars. MERIDIAN_OPUS_EFFORT overrides
+          // body.effort for Opus so the operator can force "max" thinking.
+          // Priority: header > env (Opus only) > body > undefined.
           const envEffort = process.env.MERIDIAN_OPUS_EFFORT;
           const isOpusModel = model === "opus" || model === "opus[1m]";
+          const envEffortApplies = !!(
+            envEffort &&
+            isOpusModel &&
+            !effortHeader
+          );
           const effort =
             effortHeader ||
+            (envEffortApplies ? envEffort : undefined) ||
             body.effort ||
-            (envEffort && isOpusModel ? envEffort : undefined);
+            undefined;
           let thinking: QueryContext["thinking"] | undefined =
             body.thinking || undefined;
+          // When env effort overrides, clear client thinking config so the
+          // SDK uses effort-derived defaults (max budget for "max").
+          if (envEffortApplies && thinking) {
+            console.error(
+              `[PROXY] ${requestMeta.requestId} MERIDIAN_OPUS_EFFORT=${envEffort}: clearing client thinking=${JSON.stringify(thinking)}`,
+            );
+            thinking = undefined;
+          }
           if (thinkingHeader !== undefined) {
             try {
               thinking = JSON.parse(thinkingHeader) as QueryContext["thinking"];
