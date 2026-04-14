@@ -528,10 +528,24 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           console.error(`[PROXY] ${requestMeta.requestId} stripped anthropic-beta(s) for Max profile: ${betaFilter.stripped.join(", ")}`)
         }
 
+        // Fork: Opus effort override. OC maps "adaptive" to "medium", which
+        // caps thinking depth too low for Treebot. MERIDIAN_OPUS_EFFORT lets
+        // operators force max thinking for Opus unless the request explicitly
+        // sets x-opencode-effort.
+        const envEffort = process.env.MERIDIAN_OPUS_EFFORT
+        const isOpusModel = model === "opus" || model === "opus[1m]"
+        const envEffortApplies = !!(envEffort && isOpusModel && !effortHeader)
         const effort = effortHeader
+          || (envEffortApplies ? envEffort : undefined)
           || body.effort
           || undefined
         let thinking: QueryContext['thinking'] | undefined = body.thinking || undefined
+        // When env effort overrides, clear client thinking config so the SDK
+        // uses effort-derived defaults, including the largest budget for "max".
+        if (envEffortApplies && thinking) {
+          console.error(`[PROXY] ${requestMeta.requestId} MERIDIAN_OPUS_EFFORT=${envEffort}: clearing client thinking=${JSON.stringify(thinking)}`)
+          thinking = undefined
+        }
         if (thinkingHeader !== undefined) {
           try {
             thinking = JSON.parse(thinkingHeader) as QueryContext["thinking"]
