@@ -57,8 +57,10 @@ export interface ProfileConfig {
   id: string
   /** Auth type — "claude-max" uses CLAUDE_CONFIG_DIR, "api" uses ANTHROPIC_API_KEY */
   type?: ProfileType
-  /** Path to .claude config directory (claude-max profiles) */
+  /** Path to .claude config directory (claude-max profiles, legacy) */
   claudeConfigDir?: string
+  /** Long-lived Claude Code setup token from `claude setup-token`. Takes precedence over claudeConfigDir. */
+  oauthToken?: string
   /** Anthropic API key (api profiles) */
   apiKey?: string
   /** Anthropic base URL override (api profiles) */
@@ -191,9 +193,13 @@ function buildResolvedProfile(profile: ProfileConfig): ResolvedProfile {
     return { id: profile.id, type, env }
   }
 
-  // claude-max: override config directory
+  // claude-max: prefer setup-token (long-lived, no Keychain/file state) over config dir
   const env: Record<string, string> = {}
-  if (profile.claudeConfigDir) env.CLAUDE_CONFIG_DIR = profile.claudeConfigDir
+  if (profile.oauthToken) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = profile.oauthToken
+  } else if (profile.claudeConfigDir) {
+    env.CLAUDE_CONFIG_DIR = profile.claudeConfigDir
+  }
   return { id: profile.id, type, env }
 }
 
