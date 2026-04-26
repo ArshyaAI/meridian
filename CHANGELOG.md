@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.40.0](https://github.com/rynfar/meridian/compare/meridian-v1.39.1...meridian-v1.40.0) (2026-04-26)
+
+
+### Features
+
+* **proxy:** expose Claude Max subscription quota via /v1/usage/quota ([#436](https://github.com/rynfar/meridian/issues/436)) ([6849537](https://github.com/rynfar/meridian/commit/68495376bcb24c946870d0dc6c91cc9ad25ae747))
+
 ## [1.39.1](https://github.com/rynfar/meridian/compare/meridian-v1.39.0...meridian-v1.39.1) (2026-04-26)
 
 
