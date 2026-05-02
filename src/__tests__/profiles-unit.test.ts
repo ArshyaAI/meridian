@@ -200,3 +200,14 @@ describe("profile-scoped session isolation", () => {
     expect(result.env.CLAUDE_CONFIG_DIR).toBe("/home/.claude")
   })
 })
+
+describe("setup-token profiles", () => {
+  test("exposes setup token for both Claude Code and SDK auth paths", () => {
+    const result = resolveProfile([{ id: "token", type: "claude-max", oauthToken: "oauth-test-token" }], undefined, "token")
+
+    expect(result.env).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: "oauth-test-token",
+      ANTHROPIC_AUTH_TOKEN: "oauth-test-token",
+    })
+  })
+})

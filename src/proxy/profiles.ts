@@ -197,6 +197,7 @@ function buildResolvedProfile(profile: ProfileConfig): ResolvedProfile {
   const env: Record<string, string> = {}
   if (profile.oauthToken) {
     env.CLAUDE_CODE_OAUTH_TOKEN = profile.oauthToken
+    env.ANTHROPIC_AUTH_TOKEN = profile.oauthToken
   } else if (profile.claudeConfigDir) {
     env.CLAUDE_CONFIG_DIR = profile.claudeConfigDir
   }
