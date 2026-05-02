@@ -149,6 +149,10 @@
     url = "https://registry.npmjs.org/@neon-rs/load/-/load-0.0.4.tgz";
     hash = "sha512-kTPhdZyTQxB+2wpiRcFWrDcejc4JI6tkPuS7UZCG4l6Zvc5kU/gGQ/ozvHTh1XR5tS+UlfAfGuPajjzQjCiHCw==";
   };
+  "@rynfar/meridian-plugin-opencode-scrub@0.2.0" = fetchurl {
+    url = "https://registry.npmjs.org/@rynfar/meridian-plugin-opencode-scrub/-/meridian-plugin-opencode-scrub-0.2.0.tgz";
+    hash = "sha512-RaXNkIwPB2NmicdNvDmYLKbLz5KsnAlNt3XfuejstPpMZBbogxhi6JSsU3k6nHGj/yoYmbpLYMGD4Bv4v30Tvg==";
+  };
   "@types/bun@1.3.11" = fetchurl {
     url = "https://registry.npmjs.org/@types/bun/-/bun-1.3.11.tgz";
     hash = "sha512-5vPne5QvtpjGpsGYXiFyycfpDF2ECyPcTSsFBMa0fraoxiQyMJ3SmuQIGhzPg2WJuWxVBoxWJ2kClYTcw/4fAg==";
