@@ -193,13 +193,13 @@ describe("classifyError", () => {
       expect(isExtraUsageRequiredError("extra usage is required for 1m context")).toBe(true)
     })
 
+    it("detects depleted extra usage variant without 1m text", () => {
+      expect(isExtraUsageRequiredError("You're out of extra usage. Add more at claude.ai/settings/usage")).toBe(true)
+    })
+
     it("returns false for unrelated errors", () => {
       expect(isExtraUsageRequiredError("rate limit exceeded")).toBe(false)
       expect(isExtraUsageRequiredError("authentication failed")).toBe(false)
-    })
-
-    it("returns false when only 'extra usage' but no '1m'", () => {
-      expect(isExtraUsageRequiredError("extra usage enabled")).toBe(false)
     })
 
     it("returns false when only '1m' but no 'extra usage'", () => {

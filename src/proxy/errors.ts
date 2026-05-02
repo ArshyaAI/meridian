@@ -164,12 +164,13 @@ export function isRateLimitError(errMsg: string): boolean {
 
 /**
  * Detect errors caused by the 1M context window requiring Extra Usage.
- * Max subscribers without Extra Usage enabled get this error when using
- * sonnet[1m] or opus[1m]. The fix is to fall back to the base model.
+ * Max subscribers without Extra Usage enabled, or with Extra Usage depleted,
+ * get this error when using sonnet[1m] or opus[1m]. The fix is to fall back to
+ * the base model. The call site already gates this check on a [1m] model.
  */
 export function isExtraUsageRequiredError(errMsg: string): boolean {
   const lower = errMsg.toLowerCase()
-  return lower.includes("extra usage") && lower.includes("1m")
+  return lower.includes("extra usage") || lower.includes("out of extra")
 }
 
 /**
