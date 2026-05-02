@@ -21,13 +21,24 @@ import {
   messageStop,
   assistantMessage,
   parseSSE,
+  toolUseBlockStart,
+  inputJsonDelta,
 } from "./helpers"
 
 let mockMessages: unknown[] = []
+let capturedPromptMessages: unknown[] = []
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
-  query: () => {
+  query: ({ prompt }: { prompt: string | AsyncIterable<unknown> }) => {
     return (async function* () {
+      capturedPromptMessages = []
+      if (typeof prompt === "string") {
+        capturedPromptMessages.push(prompt)
+      } else {
+        for await (const msg of prompt) {
+          capturedPromptMessages.push(msg)
+        }
+      }
       for (const msg of mockMessages) yield msg
     })()
   },
@@ -66,6 +77,7 @@ async function postChatCompletion(app: ReturnType<typeof createTestApp>, body: R
 describe("POST /v1/chat/completions — non-streaming", () => {
   beforeEach(() => {
     mockMessages = []
+    capturedPromptMessages = []
     clearSessionCache()
   })
 
@@ -161,6 +173,35 @@ describe("POST /v1/chat/completions — non-streaming", () => {
 
     expect(res.headers.get("content-type")).toContain("application/json")
   })
+
+  it("preserves data-url image_url blocks for the SDK prompt", async () => {
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: false,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "describe this" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,abc123" } },
+        ],
+      }],
+    })
+
+    expect(res.status).toBe(200)
+    expect(capturedPromptMessages).toEqual([{
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "describe this" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "abc123" } },
+        ],
+      },
+      parent_tool_use_id: null,
+    }])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -170,6 +211,7 @@ describe("POST /v1/chat/completions — non-streaming", () => {
 describe("POST /v1/chat/completions — streaming", () => {
   beforeEach(() => {
     mockMessages = []
+    capturedPromptMessages = []
     clearSessionCache()
   })
 
@@ -320,6 +362,129 @@ describe("POST /v1/chat/completions — streaming", () => {
     expect(uniqueIds.size).toBe(1)
     expect([...uniqueIds][0]).toMatch(/^chatcmpl-/)
   })
+
+  // --- tool_call_counter increment behavior ---
+
+  type DeltaToolCall = {
+    type?: string
+    index?: number
+    id?: string
+    function?: { name?: string; arguments?: string }
+  }
+  type StreamChunk = {
+    choices: Array<{
+      delta: { tool_calls?: DeltaToolCall[]; content?: string; reasoning_content?: string }
+      finish_reason: string | null
+    }>
+  }
+
+  function streamChunks(text: string): StreamChunk[] {
+    return text.split("\n")
+      .filter(l => l.startsWith("data: ") && l !== "data: [DONE]")
+      .map(l => JSON.parse(l.slice(6)) as StreamChunk)
+  }
+
+  it("single tool_use stream emits tool_call with index 0", async () => {
+    mockMessages = [
+      messageStart("msg_1"),
+      toolUseBlockStart(0, "get_weather", "tu_1"),
+      inputJsonDelta(0, '{"city":'),
+      inputJsonDelta(0, '"NYC"}'),
+      blockStop(0),
+      messageDelta("tool_use"),
+      messageStop(),
+    ]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: true,
+      messages: [{ role: "user", content: "weather?" }],
+    })
+
+    const chunks = streamChunks(await readStream(res))
+    const toolCallChunks = chunks
+      .map(c => c.choices[0]!.delta.tool_calls)
+      .filter((tc): tc is DeltaToolCall[] => Array.isArray(tc) && tc.length > 0)
+
+    expect(toolCallChunks.length).toBeGreaterThan(0)
+    // Every emitted tool_call delta for a single tool must use index 0
+    for (const tc of toolCallChunks) {
+      expect(tc[0]!.index).toBe(0)
+    }
+
+    // Final chunk has tool_calls finish_reason
+    const finishChunk = chunks.find(c => c.choices[0]!.finish_reason !== null)
+    expect(finishChunk?.choices[0]!.finish_reason).toBe("tool_calls")
+  })
+
+  it("multiple sequential tool_use blocks emit ascending indexes 0, 1, 2", async () => {
+    mockMessages = [
+      messageStart("msg_1"),
+      toolUseBlockStart(0, "fn_a", "tu_a"),
+      inputJsonDelta(0, '{"x":1}'),
+      blockStop(0),
+      toolUseBlockStart(1, "fn_b", "tu_b"),
+      inputJsonDelta(1, '{"y":2}'),
+      blockStop(1),
+      toolUseBlockStart(2, "fn_c", "tu_c"),
+      inputJsonDelta(2, '{"z":3}'),
+      blockStop(2),
+      messageDelta("tool_use"),
+      messageStop(),
+    ]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: true,
+      messages: [{ role: "user", content: "do all three" }],
+    })
+
+    const chunks = streamChunks(await readStream(res))
+
+    // Tool starts are the chunks that carry id + name; collect their indexes in order
+    const startIndexes = chunks
+      .map(c => c.choices[0]!.delta.tool_calls?.[0])
+      .filter((tc): tc is DeltaToolCall => !!tc && tc.type === "function" && typeof tc.id === "string")
+      .map(tc => tc.index)
+    expect(startIndexes).toEqual([0, 1, 2])
+
+    // Argument-delta chunks for each tool should carry the matching index
+    const argChunks = chunks
+      .map(c => c.choices[0]!.delta.tool_calls?.[0])
+      .filter((tc): tc is DeltaToolCall =>
+        !!tc && !tc.id && typeof tc.function?.arguments === "string"
+      )
+    expect(argChunks.map(a => a.index)).toEqual([0, 1, 2])
+    expect(argChunks.map(a => a.function!.arguments)).toEqual(['{"x":1}', '{"y":2}', '{"z":3}'])
+  })
+
+  it("text-then-tool stream: tool indexes start at 0 (not affected by preceding text block)", async () => {
+    // tool_call_counter only increments on tool_use blocks, so a text block
+    // before a tool_use should still result in index 0 for the first tool.
+    mockMessages = [
+      messageStart("msg_1"),
+      textBlockStart(0), textDelta(0, "let me check"),
+      blockStop(0),
+      toolUseBlockStart(1, "search", "tu_1"),
+      inputJsonDelta(1, '{"q":"x"}'),
+      blockStop(1),
+      messageDelta("tool_use"),
+      messageStop(),
+    ]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: true,
+      messages: [{ role: "user", content: "go" }],
+    })
+
+    const chunks = streamChunks(await readStream(res))
+    const startIndex = chunks
+      .map(c => c.choices[0]!.delta.tool_calls?.[0])
+      .find((tc): tc is DeltaToolCall => !!tc && tc.type === "function" && typeof tc.id === "string")
+      ?.index
+    expect(startIndex).toBe(0)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -339,14 +504,14 @@ describe("GET /v1/models", () => {
     expect(data.length).toBeGreaterThan(0)
   })
 
-  it("includes claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-20251001", async () => {
+  it("includes claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5", async () => {
     const app = createTestApp()
     const res = await app.fetch(new Request("http://localhost/v1/models"))
     const body = await res.json() as Record<string, unknown>
     const ids = (body.data as Array<Record<string, unknown>>).map(m => m.id)
     expect(ids).toContain("claude-sonnet-4-6")
     expect(ids).toContain("claude-opus-4-6")
-    expect(ids).toContain("claude-haiku-4-5-20251001")
+    expect(ids).toContain("claude-haiku-4-5")
   })
 
   it("each model has required fields", async () => {

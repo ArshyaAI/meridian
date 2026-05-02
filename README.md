@@ -7,12 +7,12 @@
   <a href="https://www.npmjs.com/package/@rynfar/meridian"><img src="https://img.shields.io/npm/v/@rynfar/meridian?style=flat-square&color=8b5cf6&label=npm" alt="npm"></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-a78bfa?style=flat-square" alt="Platform"></a>
   <a href="#"><img src="https://img.shields.io/badge/license-MIT-c4b5fd?style=flat-square" alt="License"></a>
-  <a href="https://discord.gg/7vNVFYBz"><img src="https://img.shields.io/badge/discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/jP2a2Z92NZ"><img src="https://img.shields.io/badge/discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 ---
 
-Meridian bridges the Claude Code SDK to the standard Anthropic API. No OAuth interception. No binary patches. No hacks. Just pure, documented SDK calls. Any tool that speaks the Anthropic or OpenAI protocol — OpenCode, ForgeCode, Crush, Cline, Aider, Pi, Droid, Open WebUI — connects to Meridian and gets Claude, with session management, streaming, and prompt caching handled natively by the SDK.
+Meridian bridges the Claude Code SDK to the standard Anthropic API. No OAuth interception. No binary patches. No hacks. Just pure, documented SDK calls. Any tool that speaks the Anthropic or OpenAI protocol — OpenCode, ForgeCode, Crush, Cline, Aider, Pi, Droid, Open WebUI, Claude Code — connects to Meridian and gets Claude, with session management, streaming, and prompt caching handled natively by the SDK.
 
 > [!NOTE]
 > ### How Meridian works with Anthropic
@@ -49,6 +49,95 @@ ANTHROPIC_API_KEY=x ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode
 
 The API key value is a placeholder — Meridian authenticates through the Claude Code SDK, not API keys. Most Anthropic-compatible tools require this field to be set, but any value works.
 
+### NixOS / Nix Flake
+
+Meridian provides a Nix flake for declarative installation.
+
+**Add to your flake inputs:**
+
+```nix
+{
+  inputs.meridian.url = "github:rynfar/meridian";
+}
+```
+
+**Install the package** (via overlay or directly):
+
+```nix
+# Option A: overlay
+nixpkgs.overlays = [ meridian.overlays.default ];
+environment.systemPackages = [ pkgs.meridian ];
+
+# Option B: direct reference
+environment.systemPackages = [ meridian.packages.${system}.meridian ];
+```
+
+**OpenCode plugin** -- the plugin file is included at `${pkgs.meridian}/lib/meridian/plugin/meridian.ts`. Since this path lives in the Nix store, you need to make it available to OpenCode:
+
+If you generate your OpenCode config from Nix (e.g. via Home Manager), interpolate the path directly:
+
+```nix
+# home-manager example
+xdg.configFile."opencode/opencode.json".text = builtins.toJSON {
+  plugin = [ "${pkgs.meridian}/lib/meridian/plugin/meridian.ts" ];
+};
+```
+
+If you don't manage your OpenCode config through Nix, symlink the plugin to a stable path and reference that instead:
+
+```nix
+# configuration.nix or home-manager
+environment.etc."meridian/plugin/meridian.ts".source =
+  "${pkgs.meridian}/lib/meridian/plugin/meridian.ts";
+```
+
+Then in `~/.config/opencode/opencode.json`:
+
+```json
+{ "plugin": ["/etc/meridian/plugin/meridian.ts"] }
+```
+
+> **Important:** Do not use `meridian setup` on NixOS. It writes an absolute Nix store path (e.g. `/nix/store/...-meridian-1.x.x/lib/...`) into your OpenCode config, which will break on the next `nixos-rebuild switch` or `home-manager switch` when the store path changes. Use one of the approaches above instead.
+
+**Home Manager service** -- run Meridian as a user systemd service:
+
+```nix
+# flake.nix
+{
+  inputs.meridian.url = "github:rynfar/meridian";
+}
+
+# home-manager config
+{
+  imports = [ meridian.homeManagerModules.default ];
+
+  services.meridian = {
+    enable = true;
+    settings = {
+      port = 3456;
+      host = "127.0.0.1";
+      # passthrough = true;
+      # defaultAgent = "opencode";
+      # sonnetModel = "sonnet";
+    };
+    # Extra env vars not covered by settings
+    # environment = {
+    #   MERIDIAN_MAX_CONCURRENT = "20";
+    # };
+  };
+}
+```
+
+The service starts automatically on login. Manage it with `systemctl --user {start,stop,restart,status} meridian`.
+
+The plugin path is also available as `config.services.meridian.opencode.pluginPath` for use in your OpenCode config:
+
+```nix
+xdg.configFile."opencode/opencode.json".text = builtins.toJSON {
+  plugin = [ config.services.meridian.opencode.pluginPath ];
+};
+```
+
 ## Why Meridian?
 
 The Claude Code SDK provides programmatic access to Claude. But your favorite coding tools expect an Anthropic API endpoint. Meridian bridges that gap — it runs locally, accepts standard API requests, and routes them through the SDK. Claude Code does the heavy lifting; Meridian translates the output.
@@ -60,14 +149,14 @@ The Claude Code SDK provides programmatic access to Claude. But your favorite co
 ## Features
 
 - **Standard Anthropic API** — drop-in compatible with any tool that supports a custom `base_url`
-- **OpenAI-compatible API** — `/v1/chat/completions` and `/v1/models` for tools that only speak the OpenAI protocol (Open WebUI, Continue, etc.) — no LiteLLM needed
+- **OpenAI-compatible API** — `/v1/chat/completions` and `/v1/models` for tools that only speak the OpenAI protocol (Open WebUI, Continue, etc.) — no LiteLLM needed, including `image_url` support for data URLs
 - **Session management** — conversations persist across requests, survive compaction and undo, resume after proxy restarts
 - **Streaming** — full SSE streaming with MCP tool filtering
 - **Concurrent sessions** — run parent and subagent requests in parallel
 - **Subagent model selection** — primary agents get 1M context; subagents get 200k, preserving rate-limit budget
 - **Auto token refresh** — expired OAuth tokens are refreshed automatically; requests continue without interruption
 - **Passthrough mode** — forward tool calls to the client instead of executing internally
-- **Multimodal** — images, documents, and file attachments pass through to Claude
+- **Multimodal** — images, documents, file attachments, and multimodal tool results pass through to Claude
 - **Multi-profile** — switch between Claude accounts instantly, no restart needed
 - **Telemetry dashboard** — real-time performance metrics at `/telemetry`, including token usage and prompt cache efficiency ([`MONITORING.md`](MONITORING.md))
 - **Telemetry persistence** — opt-in SQLite storage for telemetry data that survives proxy restarts, with configurable retention
@@ -320,6 +409,9 @@ Meridian speaks the OpenAI protocol natively — no LiteLLM or translation proxy
 
 **`POST /v1/chat/completions`** — accepts OpenAI chat format, returns OpenAI completion format (streaming and non-streaming)
 
+- `image_url` parts are supported when provided as **data URLs** (`data:image/...;base64,...`)
+- multimodal tool flows where a tool returns `tool_result.content = [text, image]` are preserved through the structured multimodal path instead of being flattened to text
+
 **`GET /v1/models`** — returns available Claude models in OpenAI format
 
 Point any OpenAI-compatible tool at `http://127.0.0.1:3456` with any API key value:
@@ -391,6 +483,35 @@ Pi uses the `@mariozechner/pi-ai` library which supports a configurable `baseUrl
 
 Pi mimics Claude Code's User-Agent, so automatic detection isn't possible. The `x-meridian-agent: pi` header in the config above tells Meridian to use the Pi adapter. Alternatively, if Pi is your only agent, you can set `MERIDIAN_DEFAULT_AGENT=pi` as an env var instead.
 
+### Claude Code
+
+Claude Code can point at Meridian like any other Anthropic API client. The
+common use case is sharing a single Claude Max subscription from one host
+across other machines on your network — run Meridian on the box that is
+logged into Claude Max, then run Claude Code anywhere else against it.
+
+```bash
+# On another machine (or the same one)
+ANTHROPIC_AUTH_TOKEN=x ANTHROPIC_BASE_URL=http://meridian-host:3456 claude
+```
+
+> **Note:** Use `ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`) — Claude Code
+> treats both as bearer credentials. Set the value to your `MERIDIAN_API_KEY`
+> if you've enabled authentication, otherwise any string works.
+
+> ⚠️ **Security for multi-machine setups.** If you expose Meridian beyond
+> loopback (e.g. bind to `0.0.0.0` or a LAN IP), **set `MERIDIAN_API_KEY` to a
+> strong secret** and require it on clients. An unprotected network-accessible
+> proxy is a Claude Max credential leak — anyone who can reach the port can
+> burn your subscription.
+
+Claude Code is detected automatically via its `claude-cli/*` User-Agent.
+Requests flow through the Claude Code adapter which:
+
+- Parses the client's real working directory from its `Primary working directory:` system-prompt line so Claude answers path-related questions with your local path, not the proxy host's.
+- Leaves the SDK subprocess cwd on the proxy host (Claude Code's local paths don't exist there).
+- Runs in passthrough mode by default — Claude Code executes its own tools on the machine it runs on; Meridian just forwards tool_use blocks.
+
 ### Any Anthropic-compatible tool
 
 ```bash
@@ -410,6 +531,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 | [Aider](https://github.com/paul-gauthier/aider) | ✅ Verified | Env vars — file editing, streaming; `--no-stream` broken (litellm bug) |
 | [Open WebUI](https://github.com/open-webui/open-webui) | ✅ Verified | OpenAI-compatible endpoints — set base URL to `http://127.0.0.1:3456` |
 | [Pi](https://github.com/mariozechner/pi-coding-agent) | ✅ Verified | models.json config (see above) — requires `MERIDIAN_DEFAULT_AGENT=pi` |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ Verified | `ANTHROPIC_BASE_URL` — remote clients share a Max subscription over the network; client CWD preserved in system prompt |
 | [Continue](https://github.com/continuedev/continue) | 🔲 Untested | OpenAI-compatible endpoints should work — set `apiBase` to `http://127.0.0.1:3456` |
 
 Tested an agent or built a plugin? [Open an issue](https://github.com/rynfar/meridian/issues) and we'll add it.
@@ -560,6 +682,27 @@ Health response example:
 
 `plugin.opencode` is `"configured"` when `meridian setup` has been run, `"not-configured"` otherwise.
 
+## Plugins
+
+Extend Meridian's behavior with composable plugins — no core modifications needed.
+
+**Quick start:** Drop a `.ts` or `.js` file in `~/.config/meridian/plugins/` and restart.
+
+```ts
+// ~/.config/meridian/plugins/my-plugin.ts
+export default {
+  name: "my-plugin",
+  onRequest(ctx) {
+    // modify request context
+    return { ...ctx, systemContext: ctx.systemContext + "\nBe concise." }
+  },
+}
+```
+
+- **Manage plugins** at `http://localhost:3456/plugins`
+- **Reload without restart:** `POST /plugins/reload`
+- **Full guide:** See [PLUGINS.md](PLUGINS.md)
+
 ## CLI Commands
 
 | Command | Description |
@@ -666,7 +809,7 @@ You haven't run `meridian setup`. Without the plugin, OpenCode requests won't ha
 
 ## Contributing
 
-Issues and PRs welcome. Join the [Discord](https://discord.gg/7vNVFYBz) to discuss ideas before opening issues. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module structure and dependency rules, [`CLAUDE.md`](CLAUDE.md) for coding guidelines, [`E2E.md`](E2E.md) for end-to-end test procedures, and [`MONITORING.md`](MONITORING.md) for understanding token usage and prompt cache health.
+Issues and PRs welcome. Join the [Discord](https://discord.gg/jP2a2Z92NZ) to discuss ideas before opening issues. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module structure and dependency rules, [`CLAUDE.md`](CLAUDE.md) for coding guidelines, [`E2E.md`](E2E.md) for end-to-end test procedures, and [`MONITORING.md`](MONITORING.md) for understanding token usage and prompt cache health.
 
 ## License
 

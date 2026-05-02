@@ -9,12 +9,12 @@ import type { Context } from "hono"
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk"
 
 /**
- * An agent adapter provides agent-specific configuration to the proxy.
- * The proxy calls these methods during request handling to determine
- * how to interact with the calling agent.
+ * Core identity of an agent — detection, session tracking, CWD extraction.
+ * This is the minimal interface for agent recognition. Behavioral customization
+ * (tool filtering, system prompt modifications, hooks) lives in Transform objects.
  */
-export interface AgentAdapter {
-  /** Human-readable name for logging */
+export interface AgentIdentity {
+  /** Human-readable name for logging and transform scoping */
   readonly name: string
 
   /**
@@ -24,10 +24,37 @@ export interface AgentAdapter {
   getSessionId(c: Context): string | undefined
 
   /**
-   * Extract the client's working directory from the request body.
-   * Returns undefined to fall back to CLAUDE_PROXY_WORKDIR or process.cwd().
+   * Extract the SDK subprocess working directory from the request body.
+   *
+   * This path must exist on the proxy host because it becomes the SDK
+   * child_process cwd (passed through as the `cwd` option to the Claude
+   * Agent SDK's query() call). If it doesn't exist, the subprocess spawn
+   * fails or chdirs misbehave.
+   *
+   * Adapters that assume the client runs on the same host as the proxy
+   * (OpenCode, Crush) can return the client-local path here.
+   * Adapters for remote clients pointing at a network-exposed proxy
+   * (Claude Code) should return undefined and override
+   * extractClientWorkingDirectory instead.
+   *
+   * Returns undefined to fall back to MERIDIAN_WORKDIR / CLAUDE_PROXY_WORKDIR
+   * env vars, then process.cwd().
    */
   extractWorkingDirectory(body: any): string | undefined
+
+  /**
+   * Optional: extract the client-local working directory (which may not
+   * exist on the proxy host). This is used for:
+   *  - Conversation fingerprinting (per-client-project bucketing so two
+   *    unrelated projects don't collide on identical first-message hashes).
+   *  - A system prompt addendum so the model reports the correct path
+   *    when asked and uses it for file path references.
+   *
+   * Return undefined to default to the SDK working directory (same machine
+   * assumption). Adapters for remote clients should implement this to parse
+   * the client's own "working directory" hint from the request body.
+   */
+  extractClientWorkingDirectory?(body: any): string | undefined
 
   /**
    * Content normalization — convert message content to a stable string
@@ -35,6 +62,19 @@ export interface AgentAdapter {
    */
   normalizeContent(content: any): string
 
+  /**
+   * The MCP server name used by this agent.
+   * Tools are registered as `mcp__{name}__{tool}`.
+   */
+  getMcpServerName(): string
+}
+
+/**
+ * An agent adapter provides agent-specific configuration to the proxy.
+ * The proxy calls these methods during request handling to determine
+ * how to interact with the calling agent.
+ */
+export interface AgentAdapter extends AgentIdentity {
   /**
    * SDK built-in tools to block (replaced by MCP equivalents).
    * These are tools where the agent provides its own implementation.
@@ -47,12 +87,6 @@ export interface AgentAdapter {
    * can't handle.
    */
   getAgentIncompatibleTools(): readonly string[]
-
-  /**
-   * The MCP server name used by this agent.
-   * Tools are registered as `mcp__{name}__{tool}`.
-   */
-  getMcpServerName(): string
 
   /**
    * MCP tools that are allowed through the proxy's tool filter.
@@ -134,6 +168,26 @@ export interface AgentAdapter {
    * clients that may choke on the encrypted signature field).
    */
   supportsThinking?(): boolean
+
+  /**
+   * Whether the proxy should append synthetic file-change summaries to the
+   * agent-visible response.
+   *
+   * Return false for agents that already expose file edits natively or where
+   * the extra block is noisy. When undefined, the proxy defaults to true.
+   */
+  shouldTrackFileChanges?(): boolean
+
+  /**
+   * Whether this agent leaks CWD/env info through `<system-reminder>` blocks
+   * in user messages (Droid). When true, the proxy strips those blocks before
+   * flattening to a text prompt so they don't echo back to the model.
+   *
+   * Most agents (OpenCode, Crush, ForgeCode) use `<system-reminder>` to surface
+   * harness state the model needs to see (e.g. oh-my-opencode background task
+   * IDs), so the default is false — preserve them.
+   */
+  leaksCwdViaSystemReminder?(): boolean
 
   /**
    * Map a client-side tool_use block to file changes (passthrough mode).

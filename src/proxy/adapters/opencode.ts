@@ -11,14 +11,14 @@ import { type FileChange, extractFileChangesFromBash } from "../fileChanges"
 import { normalizeContent } from "../messages"
 import { extractClientCwd } from "../session/fingerprint"
 import { BLOCKED_BUILTIN_TOOLS, CLAUDE_CODE_ONLY_TOOLS, MCP_SERVER_NAME, ALLOWED_MCP_TOOLS } from "../tools"
-import { buildAgentDefinitions } from "../agentDefs"
+import { buildAgentDefinitionsFromTool } from "../agentDefs"
 import { fuzzyMatchAgentName } from "../agentMatch"
 
 export const openCodeAdapter: AgentAdapter = {
   name: "opencode",
 
   getSessionId(c: Context): string | undefined {
-    return c.req.header("x-opencode-session")
+    return c.req.header("x-opencode-session") ?? c.req.header("x-session-affinity")
   },
 
   extractWorkingDirectory(body: any): string | undefined {
@@ -63,14 +63,22 @@ export const openCodeAdapter: AgentAdapter = {
   },
 
   /**
+   * NOTE: OpenCode-specific. OpenCode already exposes file edits in its own UI,
+   * so Meridian should not append a synthetic "Files changed:" block.
+   */
+  shouldTrackFileChanges(): boolean {
+    return false
+  },
+
+  /**
    * NOTE: OpenCode-specific. Parses the Task tool description to extract
    * subagent names and build SDK AgentDefinition objects for native subagent routing.
    */
   buildSdkAgents(body: any, mcpToolNames: readonly string[]): Record<string, any> {
     if (!Array.isArray(body.tools)) return {}
     const taskTool = body.tools.find((t: any) => t.name === "task" || t.name === "Task")
-    if (!taskTool?.description) return {}
-    return buildAgentDefinitions(taskTool.description, [...mcpToolNames])
+    if (!taskTool) return {}
+    return buildAgentDefinitionsFromTool(taskTool, [...mcpToolNames])
   },
 
   /**
@@ -133,3 +141,6 @@ export const openCodeAdapter: AgentAdapter = {
     return []
   },
 }
+
+import { openCodeTransforms } from "../transforms/opencode"
+export { openCodeTransforms }

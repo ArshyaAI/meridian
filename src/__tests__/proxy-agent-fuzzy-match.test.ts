@@ -11,7 +11,7 @@
 import { describe, it, expect } from "bun:test"
 
 // Import the matching function directly
-import { fuzzyMatchAgentName } from "../proxy/agentMatch"
+import { fuzzyMatchAgentName, resolveAgentAlias } from "../proxy/agentMatch"
 
 describe("fuzzyMatchAgentName", () => {
   const validAgents = [
@@ -67,10 +67,11 @@ describe("fuzzyMatchAgentName", () => {
     expect(fuzzyMatchAgentName("build-agent", validAgents)).toBe("build")
   })
 
-  // --- No match → return original lowercased ---
-  it("should return lowercased original when no match found", () => {
-    expect(fuzzyMatchAgentName("nonexistent", validAgents)).toBe("nonexistent")
-    expect(fuzzyMatchAgentName("FooBar", validAgents)).toBe("foobar")
+  // --- No match → route to fallback agent ---
+  it("should route unknown names to 'general' when it exists in valid agents", () => {
+    expect(fuzzyMatchAgentName("nonexistent", validAgents)).toBe("general")
+    expect(fuzzyMatchAgentName("FooBar", validAgents)).toBe("general")
+    expect(fuzzyMatchAgentName("completely-made-up-agent", validAgents)).toBe("general")
   })
 
   // --- Edge cases ---
@@ -87,5 +88,47 @@ describe("fuzzyMatchAgentName", () => {
     expect(fuzzyMatchAgentName("search", validAgents)).toBe("explore")
     expect(fuzzyMatchAgentName("research", validAgents)).toBe("librarian")
     expect(fuzzyMatchAgentName("consult", validAgents)).toBe("oracle")
+  })
+})
+
+describe("Fallback to generic agent", () => {
+  it("should fall back to lowercased original when 'general' is NOT in valid agents", () => {
+    const agentsWithoutGeneral = ["build", "plan", "oracle"]
+    expect(fuzzyMatchAgentName("nonexistent", agentsWithoutGeneral)).toBe("nonexistent")
+    expect(fuzzyMatchAgentName("FooBar", agentsWithoutGeneral)).toBe("foobar")
+  })
+
+  it("should route completely unknown names to 'general' when it exists", () => {
+    const agentsWithGeneral = ["build", "plan", "general"]
+    expect(fuzzyMatchAgentName("xyzzy", agentsWithGeneral)).toBe("general")
+    expect(fuzzyMatchAgentName("ProviderModelNotFoundError", agentsWithGeneral)).toBe("general")
+  })
+
+  it("should still prefer real matches over fallback", () => {
+    const agents = ["build", "plan", "general", "explore"]
+    // Prefix match should still work before fallback
+    expect(fuzzyMatchAgentName("exp", agents)).toBe("explore")
+    // Alias should still work before fallback
+    expect(fuzzyMatchAgentName("planner", agents)).toBe("plan")
+  })
+})
+
+describe("resolveAgentAlias", () => {
+  it("returns the canonical target for known aliases", () => {
+    expect(resolveAgentAlias("general-purpose")).toBe("general")
+    expect(resolveAgentAlias("General-Purpose")).toBe("general")
+    expect(resolveAgentAlias("code-reviewer")).toBe("oracle")
+    expect(resolveAgentAlias("planner")).toBe("plan")
+  })
+
+  it("returns the lowercased input when no alias applies", () => {
+    expect(resolveAgentAlias("explore")).toBe("explore")
+    expect(resolveAgentAlias("Explore")).toBe("explore")
+    expect(resolveAgentAlias("custom-agent")).toBe("custom-agent")
+  })
+
+  it("is case-insensitive for alias lookup", () => {
+    expect(resolveAgentAlias("GENERAL-PURPOSE")).toBe("general")
+    expect(resolveAgentAlias("Code-Reviewer")).toBe("oracle")
   })
 })

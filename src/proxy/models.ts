@@ -3,14 +3,57 @@
  */
 
 import { exec as execCallback } from "child_process"
-import { existsSync } from "fs"
+import { existsSync, statSync } from "fs"
 import { fileURLToPath } from "url"
 import { join, dirname } from "path"
 import { promisify } from "util"
 
 const exec = promisify(execCallback)
 
+/**
+ * Files smaller than this are treated as the placeholder stub that
+ * `@anthropic-ai/claude-code/install.cjs` writes when the platform-specific
+ * binary fails to install. The real Claude Code binary is ~200 MB; the stub
+ * is ~500 bytes. Anything under 4 KB is the stub. Used in the bundled-binary
+ * resolver step to avoid handing the proxy a non-functional placeholder when
+ * upstream postinstall fails (see issue #445).
+ */
+const STUB_SIZE_THRESHOLD = 4096
+
 export type ClaudeModel = "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]" | "haiku"
+
+/**
+ * Current canonical pins for the `sonnet`/`opus`/`haiku` SDK aliases.
+ *
+ * mapModelToClaudeModel collapses every requested model to one of these
+ * aliases; the Claude Agent SDK then resolves the alias to a concrete
+ * version via ANTHROPIC_DEFAULT_{TYPE}_MODEL env vars. When those env
+ * vars are unset the SDK falls back to its own bundled defaults, which
+ * lag real Claude Max availability — users end up routed to stale
+ * versions (this was the root cause of #419: opus-* requests silently
+ * answering as sonnet-4).
+ *
+ * Meridian now pins these defaults itself at the SDK subprocess boundary
+ * so fresh installs behave correctly out of the box. Users can still
+ * override via MERIDIAN_DEFAULT_{TYPE}_MODEL (proxy-side) or
+ * ANTHROPIC_DEFAULT_{TYPE}_MODEL (shell env, wins over Meridian's pin).
+ */
+export const CANONICAL_OPUS_MODEL = "claude-opus-4-7"
+export const CANONICAL_SONNET_MODEL = "claude-sonnet-4-6"
+export const CANONICAL_HAIKU_MODEL = "claude-haiku-4-5"
+
+/**
+ * Build the ANTHROPIC_DEFAULT_{TYPE}_MODEL env record to apply before the
+ * inherited process env, so user-set shell values still win but unset
+ * variables get Meridian's canonical pins.
+ */
+export function resolveSdkModelDefaults(): Record<string, string> {
+  return {
+    ANTHROPIC_DEFAULT_OPUS_MODEL: process.env.MERIDIAN_DEFAULT_OPUS_MODEL ?? CANONICAL_OPUS_MODEL,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: process.env.MERIDIAN_DEFAULT_SONNET_MODEL ?? CANONICAL_SONNET_MODEL,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: process.env.MERIDIAN_DEFAULT_HAIKU_MODEL ?? CANONICAL_HAIKU_MODEL,
+  }
+}
 export interface ClaudeAuthStatus {
   loggedIn?: boolean
   subscriptionType?: string
@@ -234,59 +277,173 @@ let cachedClaudePathPromise: Promise<string> | null = null
  * The promise is cleared in `finally` to allow retry on failure while
  * cachedClaudePath prevents re-resolution on success.
  */
+/**
+ * Resolver step contract — each tries one source, returns a path on success
+ * or null on miss. Failures (thrown errors) are caught by the caller and
+ * treated as misses so unresolved sources never block subsequent steps.
+ */
+type ResolverDeps = {
+  existsSync: (p: string) => boolean
+  statSync: (p: string) => { size: number }
+  exec: (cmd: string) => Promise<{ stdout: string }>
+  resolvePackage: (specifier: string) => string
+  envGet: (name: string) => string | undefined
+  platform: NodeJS.Platform
+  arch: string
+  isBun: boolean
+}
+
+const DEFAULT_DEPS: ResolverDeps = {
+  existsSync,
+  statSync: (p) => statSync(p),
+  exec,
+  resolvePackage: (specifier) => fileURLToPath(import.meta.resolve(specifier)),
+  envGet: (name) => process.env[name],
+  platform: process.platform,
+  arch: process.arch,
+  isBun: typeof process.versions.bun !== "undefined",
+}
+
+/**
+ * Step 0: explicit env override. Non-empty MERIDIAN_CLAUDE_PATH wins
+ * unconditionally, so users with broken installs / unusual setups can
+ * always point at a known-good binary. Mirrors the escape-hatch
+ * convention used by other proxy env vars.
+ */
+function tryEnvOverride(deps: ResolverDeps): string | null {
+  const explicit = deps.envGet("MERIDIAN_CLAUDE_PATH")
+  if (!explicit) return null
+  return deps.existsSync(explicit) ? explicit : null
+}
+
+/**
+ * Step 1: bundled `@anthropic-ai/claude-code/bin/claude.exe`.
+ *
+ * Skips the placeholder stub (≤4 KB) so we don't return a non-functional
+ * file when the upstream postinstall failed (issue #445). The real
+ * platform binary is ~200 MB; the stub is ~500 bytes.
+ */
+function tryBundledBinary(deps: ResolverDeps): string | null {
+  try {
+    const pkgPath = deps.resolvePackage("@anthropic-ai/claude-code/package.json")
+    const bundled = join(dirname(pkgPath), "bin", "claude.exe")
+    if (!deps.existsSync(bundled)) return null
+    const size = deps.statSync(bundled).size
+    if (size <= STUB_SIZE_THRESHOLD) return null
+    return bundled
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Step 2: platform-specific peer package
+ * (`@anthropic-ai/claude-code-<platform>-<arch>`). This is where the
+ * actual binary lives in the SDK ≥ 0.2.x split layout — the wrapper at
+ * `claude-code/bin/claude.exe` is just a hardlink/copy from here.
+ *
+ * Bypasses the bundled-binary path entirely, so it works when the
+ * upstream postinstall failed to do the link (#445) AND when the
+ * bundled wrapper exists but fails to spawn on the host (#417 — Windows
+ * `spawn UNKNOWN` reported by BenIsLegit, where the wrapper failed but
+ * the platform-package binary worked).
+ */
+function tryPlatformPackage(deps: ResolverDeps): string | null {
+  const binName = deps.platform === "win32" ? "claude.exe" : "claude"
+  const candidates = [`@anthropic-ai/claude-code-${deps.platform}-${deps.arch}`]
+  // Linux musl variant — claude-code ships a separate package for Alpine
+  // and other musl-based distros.
+  if (deps.platform === "linux") {
+    candidates.push(`@anthropic-ai/claude-code-${deps.platform}-${deps.arch}-musl`)
+  }
+  for (const pkg of candidates) {
+    try {
+      const pkgJson = deps.resolvePackage(`${pkg}/package.json`)
+      const candidate = join(dirname(pkgJson), binName)
+      if (deps.existsSync(candidate)) return candidate
+    } catch {
+      // Package not installed for this arch — try the next candidate.
+    }
+  }
+  return null
+}
+
+/**
+ * Step 3: PATH lookup via `where claude` on Windows or `which claude` on POSIX.
+ *
+ * Windows nuances handled here:
+ *   - `where` returns multiple newline-separated paths when multiple
+ *     binaries match — pick the first one that exists.
+ *   - On systems with Git for Windows installed, plain `which claude`
+ *     would invoke `which.exe` from `usr/bin/` which emits mingw-style
+ *     paths like `/c/nvm4w/nodejs/claude` that `existsSync` rejects.
+ *     Using `where` (the cmd.exe builtin / PowerShell-equivalent)
+ *     avoids that whole class of bugs.
+ *
+ * Filtering: any path that starts with `/` on Windows is a mingw-style
+ * path (real Windows paths start with a drive letter); skip them rather
+ * than feed unusable strings to `existsSync`.
+ */
+async function tryPathLookup(deps: ResolverDeps): Promise<string | null> {
+  const cmd = deps.platform === "win32" ? "where claude" : "which claude"
+  try {
+    const { stdout } = await deps.exec(cmd)
+    const candidates = stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    for (const candidate of candidates) {
+      if (deps.platform === "win32" && candidate.startsWith("/")) continue
+      if (deps.existsSync(candidate)) return candidate
+    }
+  } catch {
+    // No `claude` on PATH (or `where`/`which` not available).
+  }
+  return null
+}
+
+/**
+ * Step 4: legacy SDK bundled cli.js (SDK < 0.2.98 only — removed in
+ * 0.2.98+). Best-effort fallback for stale bun installs; no-op for
+ * fresh ones.
+ */
+function tryLegacySdkCliJs(deps: ResolverDeps): string | null {
+  if (!deps.isBun) return null
+  try {
+    const sdkPath = deps.resolvePackage("@anthropic-ai/claude-agent-sdk")
+    const cliJs = join(dirname(sdkPath), "cli.js")
+    return deps.existsSync(cliJs) ? cliJs : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Pure resolver — runs each step and returns the first hit, or null when
+ * all steps miss. Exported for unit tests; production callers use
+ * resolveClaudeExecutableAsync, which adds caching on top.
+ */
+export async function resolveClaudeExecutable(deps: ResolverDeps = DEFAULT_DEPS): Promise<string | null> {
+  return (
+    tryEnvOverride(deps) ??
+    tryBundledBinary(deps) ??
+    tryPlatformPackage(deps) ??
+    (await tryPathLookup(deps)) ??
+    tryLegacySdkCliJs(deps)
+  )
+}
+
 export async function resolveClaudeExecutableAsync(): Promise<string> {
   if (cachedClaudePath) return cachedClaudePath
   if (cachedClaudePathPromise) return cachedClaudePathPromise
 
   cachedClaudePathPromise = (async () => {
-    // The SDK runs cli.js via bun or node depending on the current runtime:
-    //   getDefaultExecutable() → "bun" if process.versions.bun, else "node"
-    //
-    // When run via node (bun not installed/not the runtime), cli.js + the
-    // --permission-mode bypassPermissions flag exits with code 1. This is
-    // the root cause of issue #203.
-    //
-    // Resolution order:
-    //   1. If running under bun: cli.js works correctly — use it
-    //   2. System claude binary: standalone, no runtime dependency, always safe
-    //   3. Last resort: cli.js via node (may fail for some permission modes)
-    const runningUnderBun = typeof process.versions.bun !== "undefined"
-
-    // 1. SDK bundled cli.js — only when bun is the runtime
-    if (runningUnderBun) {
-      try {
-        const sdkPath = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"))
-        const sdkCliJs = join(dirname(sdkPath), "cli.js")
-        if (existsSync(sdkCliJs)) {
-          cachedClaudePath = sdkCliJs
-          return sdkCliJs
-        }
-      } catch {}
+    const resolved = await resolveClaudeExecutable()
+    if (resolved) {
+      cachedClaudePath = resolved
+      return resolved
     }
-
-    // 2. System-installed claude binary (standalone — no runtime dependency)
-    try {
-      const { stdout } = await exec("which claude")
-      const claudePath = stdout.trim()
-      if (claudePath && existsSync(claudePath)) {
-        cachedClaudePath = claudePath
-        return claudePath
-      }
-    } catch {}
-
-    // 3. Last resort: SDK cli.js via node (limited — bypassPermissions may fail)
-    if (!runningUnderBun) {
-      try {
-        const sdkPath = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"))
-        const sdkCliJs = join(dirname(sdkPath), "cli.js")
-        if (existsSync(sdkCliJs)) {
-          cachedClaudePath = sdkCliJs
-          return sdkCliJs
-        }
-      } catch {}
-    }
-
-    throw new Error("Could not find Claude Code executable. Install via: npm install -g @anthropic-ai/claude-code")
+    throw new Error(
+      "Could not find Claude Code executable. Install via: npm install -g @anthropic-ai/claude-code, " +
+      "or set MERIDIAN_CLAUDE_PATH=/path/to/claude to point at an existing binary.",
+    )
   })()
 
   try {

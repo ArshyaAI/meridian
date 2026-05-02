@@ -13,6 +13,7 @@ import { crushAdapter } from "./crush"
 import { passthroughAdapter } from "./passthrough"
 import { piAdapter } from "./pi"
 import { forgeCodeAdapter } from "./forgecode"
+import { claudeCodeAdapter } from "./claudecode"
 
 const ADAPTER_MAP: Record<string, AgentAdapter> = {
   opencode: openCodeAdapter,
@@ -21,6 +22,8 @@ const ADAPTER_MAP: Record<string, AgentAdapter> = {
   passthrough: passthroughAdapter,
   pi: piAdapter,
   forgecode: forgeCodeAdapter,
+  "claude-code": claudeCodeAdapter,
+  claudecode: claudeCodeAdapter,
 }
 
 const envDefault = process.env.MERIDIAN_DEFAULT_AGENT || ""
@@ -54,8 +57,9 @@ function isLiteLLMRequest(c: Context): boolean {
  * 3. User-Agent starts with "opencode/"     → OpenCode adapter
  * 4. User-Agent starts with "factory-cli/"  → Droid adapter
  * 5. User-Agent starts with "Charm-Crush/"  → Crush adapter
- * 6. litellm/* UA or x-litellm-* headers   → LiteLLM passthrough adapter
- * 7. Default                                → MERIDIAN_DEFAULT_AGENT env var, or OpenCode
+ * 6. User-Agent starts with "claude-cli/"  → Claude Code adapter
+ * 7. litellm/* UA or x-litellm-* headers   → LiteLLM passthrough adapter
+ * 8. Default                                → MERIDIAN_DEFAULT_AGENT env var, or OpenCode
  */
 export function detectAdapter(c: Context): AgentAdapter {
   const agentOverride = c.req.header("x-meridian-agent")?.toLowerCase()
@@ -81,6 +85,23 @@ export function detectAdapter(c: Context): AgentAdapter {
 
   if (userAgent.startsWith("Charm-Crush/")) {
     return crushAdapter
+  }
+
+  // Claude Code CLI — `claude-cli/<version>`. Pi (and downstream Pi-based
+  // harnesses like pylon) mimic this User-Agent, so when the operator has
+  // declared a default via MERIDIAN_DEFAULT_AGENT we treat the env var as
+  // the tiebreaker for this ambiguous UA. Other unambiguous UAs
+  // (opencode/, factory-cli/, Charm-Crush/) still win over the env default
+  // — the env default only resolves the claude-cli collision. Without this,
+  // setting MERIDIAN_DEFAULT_AGENT=pi has no effect because the claude-cli
+  // matcher fires first for Pi traffic. (Read at call time, not module
+  // load, so tests can toggle the env between cases.)
+  if (userAgent.startsWith("claude-cli/")) {
+    const claudeCliOverride = (process.env.MERIDIAN_DEFAULT_AGENT || "").toLowerCase()
+    if (claudeCliOverride && ADAPTER_MAP[claudeCliOverride] && claudeCliOverride !== "claude-code" && claudeCliOverride !== "claudecode") {
+      return ADAPTER_MAP[claudeCliOverride]!
+    }
+    return claudeCodeAdapter
   }
 
   if (isLiteLLMRequest(c)) {

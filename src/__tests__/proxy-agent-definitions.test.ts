@@ -6,7 +6,14 @@
  */
 
 import { describe, it, expect } from "bun:test"
-import { parseAgentDescriptions, buildAgentDefinitions, mapModelTier } from "../proxy/agentDefs"
+import {
+  parseAgentDescriptions,
+  buildAgentDefinitions,
+  mapModelTier,
+  FALLBACK_AGENT_NAME,
+  parseAgentNamesFromSchema,
+  buildAgentDefinitionsFromTool,
+} from "../proxy/agentDefs"
 
 const SAMPLE_TASK_DESCRIPTION = `Launch a new agent to handle complex, multistep tasks autonomously.
 
@@ -47,22 +54,33 @@ describe("parseAgentDescriptions", () => {
   })
 })
 
+/** Helper: get base agent names (lowercase, non-alias) from a definitions map */
+const KNOWN_ALIASES = new Set(["general-purpose"])
+function baseAgentNames(defs: Record<string, any>): string[] {
+  return Object.keys(defs).filter(k => k === k.toLowerCase() && !KNOWN_ALIASES.has(k))
+}
+
 describe("buildAgentDefinitions", () => {
-  it("should create AgentDefinition for each parsed agent", () => {
+  it("should create AgentDefinition for each parsed agent plus defaults", () => {
     const defs = buildAgentDefinitions(SAMPLE_TASK_DESCRIPTION)
 
-    expect(Object.keys(defs)).toHaveLength(6)
+    // 6 parsed + 1 injected default ("general") = 7 base agents
+    const base = baseAgentNames(defs)
+    expect(base).toHaveLength(7)
     expect(defs["oracle"]).toBeDefined()
     expect(defs["explore"]).toBeDefined()
     expect(defs["build"]).toBeDefined()
+    expect(defs["general"]).toBeDefined()
   })
 
-  it("each agent should have description, prompt, and model", () => {
+  it("each base agent should have description, prompt, and model", () => {
     const defs = buildAgentDefinitions(SAMPLE_TASK_DESCRIPTION)
 
-    for (const [name, def] of Object.entries(defs)) {
+    for (const name of baseAgentNames(defs)) {
+      const def = defs[name]!
       expect(def.description).toBeTruthy()
-      expect(def.prompt).toContain(name)
+      // Prompt references the original agent name (not aliases or variants)
+      expect(def.prompt).toContain(`"${name}" agent`)
       expect(def.model).toBe("inherit")
     }
   })
@@ -119,7 +137,7 @@ describe("mapModelTier", () => {
 })
 
 describe("Native OpenCode (no oh-my-opencode)", () => {
-  it("should handle minimal native agents (build + plan only)", () => {
+  it("should handle minimal native agents (build + plan only) with defaults injected", () => {
     const nativeDescription = `Launch a new agent to handle complex, multistep tasks autonomously.
 
 Available agent types and the tools they have access to:
@@ -130,9 +148,12 @@ When using the Task tool, you must specify a subagent_type parameter.`
 
     const agents = buildAgentDefinitions(nativeDescription)
 
-    expect(Object.keys(agents)).toHaveLength(2)
+    // 2 parsed + 2 injected defaults ("explore", "general") = 4 base agents
+    expect(baseAgentNames(agents)).toHaveLength(4)
     expect(agents["build"]).toBeDefined()
     expect(agents["plan"]).toBeDefined()
+    expect(agents["explore"]).toBeDefined()
+    expect(agents["general"]).toBeDefined()
     expect(agents["build"]!.description).toContain("default agent")
     expect(agents["plan"]!.description).toContain("Plan mode")
   })
@@ -150,9 +171,12 @@ When using the Task tool, you must specify a subagent_type parameter.`
 
     const agents = buildAgentDefinitions(customDescription)
 
-    expect(Object.keys(agents)).toHaveLength(3)
+    // 3 parsed + 2 injected defaults ("explore", "general") = 5 base agents
+    expect(baseAgentNames(agents)).toHaveLength(5)
     expect(agents["librarian"]).toBeDefined()
     expect(agents["librarian"]!.description).toContain("Documentation search")
+    expect(agents["explore"]).toBeDefined()
+    expect(agents["general"]).toBeDefined()
   })
 })
 
@@ -186,11 +210,13 @@ When using the Task tool, you must specify a subagent_type parameter.`
 
     const agents = buildAgentDefinitions(omooDescription, mcpTools)
 
-    // All 10 agents extracted
-    expect(Object.keys(agents)).toHaveLength(10)
+    // All 10 base agents extracted (all 4 defaults already present)
+    const base = baseAgentNames(agents)
+    expect(base).toHaveLength(10)
 
-    // Each agent has proper structure
-    for (const [name, def] of Object.entries(agents)) {
+    // Each base agent has proper structure
+    for (const name of base) {
+      const def = agents[name]!
       expect(def.description.length).toBeGreaterThan(10)
       expect(def.prompt).toContain(name)
       expect(def.model).toBe("inherit")
@@ -215,5 +241,222 @@ describe("No Task tool (no agents)", () => {
   it("should return empty when description has no agent section", () => {
     const agents = buildAgentDefinitions("Launch a new agent to handle tasks.")
     expect(Object.keys(agents)).toHaveLength(0)
+  })
+})
+
+describe("Default agent injection", () => {
+  it("should inject defaults when parsing yields results", () => {
+    const desc = `Available agent types and the tools they have access to:
+- oracle: Read-only consultation agent.`
+    const agents = buildAgentDefinitions(desc)
+
+    // 1 parsed + 4 defaults (build, plan, explore, general) = 5 base agents
+    expect(baseAgentNames(agents)).toHaveLength(5)
+    expect(agents["oracle"]).toBeDefined()
+    expect(agents["build"]).toBeDefined()
+    expect(agents["plan"]).toBeDefined()
+    expect(agents["explore"]).toBeDefined()
+    expect(agents["general"]).toBeDefined()
+  })
+
+  it("should NOT inject defaults when parsing yields nothing", () => {
+    const agents = buildAgentDefinitions("No agents here")
+    expect(Object.keys(agents)).toHaveLength(0)
+  })
+
+  it("user-defined agents take priority over defaults", () => {
+    const desc = `Available agent types and the tools they have access to:
+- build: My custom build agent with special powers.`
+    const agents = buildAgentDefinitions(desc)
+
+    // User's description should NOT be overwritten by the default
+    expect(agents["build"]!.description).toBe("My custom build agent with special powers.")
+  })
+
+  it("should include MCP tools in default agent definitions", () => {
+    const desc = `Available agent types and the tools they have access to:
+- oracle: Read-only consultation agent.`
+    const mcpTools = ["mcp__opencode__read", "mcp__opencode__bash"]
+    const agents = buildAgentDefinitions(desc, mcpTools)
+
+    // Injected defaults should also get MCP tools
+    expect(agents["general"]!.tools).toEqual(mcpTools)
+    expect(agents["explore"]!.tools).toEqual(mcpTools)
+  })
+
+  it("fallback agent name is always present when agents exist", () => {
+    const desc = `Available agent types and the tools they have access to:
+- build: The default agent.`
+    const agents = buildAgentDefinitions(desc)
+
+    expect(agents[FALLBACK_AGENT_NAME]).toBeDefined()
+  })
+})
+
+describe("parseAgentNamesFromSchema (input_schema enum fallback)", () => {
+  it("extracts enum names from input_schema.properties.subagent_type", () => {
+    const tool = {
+      name: "task",
+      description: "Spawn agent task with category-based or direct agent selection.",
+      input_schema: {
+        type: "object",
+        properties: {
+          subagent_type: { type: "string", enum: ["oracle", "librarian", "dev", "explore"] },
+        },
+      },
+    }
+    expect(parseAgentNamesFromSchema(tool)).toEqual(["oracle", "librarian", "dev", "explore"])
+  })
+
+  it("returns empty array when subagent_type has no enum", () => {
+    const tool = {
+      input_schema: {
+        properties: { subagent_type: { type: "string" } },
+      },
+    }
+    expect(parseAgentNamesFromSchema(tool)).toEqual([])
+  })
+
+  it("returns empty array when input_schema is missing", () => {
+    expect(parseAgentNamesFromSchema({})).toEqual([])
+    expect(parseAgentNamesFromSchema(null)).toEqual([])
+    expect(parseAgentNamesFromSchema(undefined)).toEqual([])
+  })
+
+  it("ignores non-string enum entries", () => {
+    const tool = {
+      input_schema: {
+        properties: {
+          subagent_type: { enum: ["oracle", 42, null, "librarian"] },
+        },
+      },
+    }
+    expect(parseAgentNamesFromSchema(tool)).toEqual(["oracle", "librarian"])
+  })
+
+  it("returns empty for primitive inputs without crashing", () => {
+    expect(parseAgentNamesFromSchema(42)).toEqual([])
+    expect(parseAgentNamesFromSchema("string")).toEqual([])
+    expect(parseAgentNamesFromSchema(true)).toEqual([])
+    expect(parseAgentNamesFromSchema([])).toEqual([])
+  })
+
+  it("returns empty when nested path is wrong shape", () => {
+    expect(parseAgentNamesFromSchema({ input_schema: 42 })).toEqual([])
+    expect(parseAgentNamesFromSchema({ input_schema: { properties: "bad" } })).toEqual([])
+    expect(parseAgentNamesFromSchema({
+      input_schema: { properties: { subagent_type: { enum: "not-array" } } },
+    })).toEqual([])
+  })
+})
+
+describe("buildAgentDefinitionsFromTool (regex with enum fallback)", () => {
+  const omoStyleTool = {
+    name: "task",
+    description:
+      "Spawn agent task with category-based or direct agent selection.\n\nCRITICAL: You MUST provide EITHER category OR subagent_type.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subagent_type: { type: "string", enum: ["oracle", "librarian"] },
+      },
+    },
+  }
+
+  it("falls back to enum when description has no 'Available agent types' block", () => {
+    const defs = buildAgentDefinitionsFromTool(omoStyleTool)
+    expect(defs["oracle"]).toBeDefined()
+    expect(defs["librarian"]).toBeDefined()
+    expect(defs["build"]).toBeDefined()
+    expect(defs["plan"]).toBeDefined()
+    expect(defs["explore"]).toBeDefined()
+    expect(defs["general"]).toBeDefined()
+  })
+
+  it("PascalCase variants present after enum fallback", () => {
+    const defs = buildAgentDefinitionsFromTool(omoStyleTool)
+    expect(defs["Oracle"]).toBeDefined()
+    expect(defs["Librarian"]).toBeDefined()
+  })
+
+  it("description-based parsing takes precedence over enum", () => {
+    const tool = {
+      description: SAMPLE_TASK_DESCRIPTION,
+      input_schema: {
+        properties: { subagent_type: { enum: ["unrelated-name"] } },
+      },
+    }
+    const defs = buildAgentDefinitionsFromTool(tool)
+    expect(defs["build"]).toBeDefined()
+    expect(defs["oracle"]).toBeDefined()
+    expect(defs["unrelated-name"]).toBeUndefined()
+  })
+
+  it("returns empty when both description block and enum are missing", () => {
+    expect(buildAgentDefinitionsFromTool({ description: "no block" })).toEqual({})
+    expect(buildAgentDefinitionsFromTool({})).toEqual({})
+  })
+
+  it("includes MCP tools on enum-derived agents", () => {
+    const mcpTools = ["mcp__opencode__read", "mcp__opencode__bash"]
+    const defs = buildAgentDefinitionsFromTool(omoStyleTool, mcpTools)
+    expect(defs["oracle"]!.tools).toEqual(mcpTools)
+    expect(defs["librarian"]!.tools).toEqual(mcpTools)
+    expect(defs["general"]!.tools).toEqual(mcpTools)
+  })
+
+  it("each enum-derived agent has prompt + inherit model", () => {
+    const defs = buildAgentDefinitionsFromTool(omoStyleTool)
+    expect(defs["oracle"]!.model).toBe("inherit")
+    expect(defs["oracle"]!.prompt).toContain(`"oracle" agent`)
+  })
+})
+
+describe("Case variant registration", () => {
+  it("should register PascalCase variants for all agents", () => {
+    const defs = buildAgentDefinitions(SAMPLE_TASK_DESCRIPTION)
+
+    // PascalCase variants should exist
+    expect(defs["Explore"]).toBeDefined()
+    expect(defs["Build"]).toBeDefined()
+    expect(defs["Plan"]).toBeDefined()
+    expect(defs["Oracle"]).toBeDefined()
+    expect(defs["Librarian"]).toBeDefined()
+    expect(defs["General"]).toBeDefined()
+    expect(defs["Sisyphus-Junior"]).toBeDefined()
+  })
+
+  it("PascalCase variant should share the same definition as the base", () => {
+    const defs = buildAgentDefinitions(SAMPLE_TASK_DESCRIPTION)
+
+    expect(defs["Explore"]!.description).toBe(defs["explore"]!.description)
+    expect(defs["Oracle"]!.prompt).toBe(defs["oracle"]!.prompt)
+  })
+
+  it("should register 'general-purpose' alias", () => {
+    const defs = buildAgentDefinitions(SAMPLE_TASK_DESCRIPTION)
+
+    expect(defs["general-purpose"]).toBeDefined()
+    expect(defs["General-Purpose"]).toBeDefined()
+    expect(defs["general-purpose"]!.description).toBe(defs["general"]!.description)
+  })
+
+  it("should not add variants when no agents exist", () => {
+    const defs = buildAgentDefinitions("No agents here")
+    expect(Object.keys(defs)).toHaveLength(0)
+  })
+
+  it("PascalCase variant must not share mutable references with base", () => {
+    const defs = buildAgentDefinitions(SAMPLE_TASK_DESCRIPTION, ["mcp__opencode__read"])
+    expect(defs["Explore"]).not.toBe(defs["explore"])
+    defs["Explore"]!.tools!.push("mcp__opencode__poison")
+    expect(defs["explore"]!.tools).not.toContain("mcp__opencode__poison")
+  })
+
+  it("'general-purpose' alias must not share mutable references with target", () => {
+    const defs = buildAgentDefinitions(SAMPLE_TASK_DESCRIPTION, ["mcp__opencode__read"])
+    expect(defs["general-purpose"]).not.toBe(defs["general"])
+    defs["general-purpose"]!.tools!.push("mcp__opencode__poison")
+    expect(defs["general"]!.tools).not.toContain("mcp__opencode__poison")
   })
 })

@@ -1,104 +1,77 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test"
 
-const { createProxyServer, startProxyServer } = await import("../proxy/server");
-const { runCli } = await import("../../bin/cli");
+const { createProxyServer, startProxyServer } = await import("../proxy/server")
+const { runCli } = await import("../../bin/cli")
 
 describe("proxy async ops", () => {
-  // @hono/node-server serve() fails to bind ports under bun's node:http compat
-  // layer (EADDRINUSE on any port including 0). Pre-existing issue on main.
-  // Re-enable when upgrading bun or switching to Bun.serve().
-  it.skip("starts server with async executable resolution", async () => {
-    const proxyA = await startProxyServer({ port: 0, host: "127.0.0.1" });
-    const proxyB = await startProxyServer({ port: 0, host: "127.0.0.1" });
+  it("starts server with async executable resolution", async () => {
+    const proxyA = await startProxyServer({ port: 0, host: "127.0.0.1" })
+    const proxyB = await startProxyServer({ port: 0, host: "127.0.0.1" })
 
-    await proxyA.close();
-    await proxyB.close();
+    await proxyA.close()
+    await proxyB.close()
 
-    expect(typeof proxyA.server.keepAliveTimeout).toBe("number");
-    expect(typeof proxyB.server.keepAliveTimeout).toBe("number");
-  });
+    expect(typeof proxyA.server.keepAliveTimeout).toBe("number")
+    expect(typeof proxyB.server.keepAliveTimeout).toBe("number")
+  })
 
   it("serves async health endpoint with correct response schema", async () => {
-    const { app } = createProxyServer({ port: 0, host: "127.0.0.1" });
-    const response = await app.fetch(new Request("http://localhost/health"));
-    const body = (await response.json()) as any;
+    const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
+    const response = await app.fetch(new Request("http://localhost/health"))
+    const body = await response.json() as any
 
-    expect(typeof body.status).toBe("string");
-    expect(typeof body.version).toBe("string");
-    expect(typeof body.mode).toBe("string");
-    expect(["healthy", "degraded", "unhealthy"]).toContain(body.status);
+    expect(typeof body.status).toBe("string")
+    expect(typeof body.version).toBe("string")
+    expect(typeof body.mode).toBe("string")
+    expect(["healthy", "degraded", "unhealthy"]).toContain(body.status)
 
     if (body.status === "healthy") {
-      expect(typeof body.auth.loggedIn).toBe("boolean");
-      expect(body.auth.loggedIn).toBe(true);
-      expect(Object.keys(body).sort()).toEqual([
-        "auth",
-        "mode",
-        "plugin",
-        "status",
-        "version",
-      ]);
+      expect(typeof body.auth.loggedIn).toBe("boolean")
+      expect(body.auth.loggedIn).toBe(true)
+      expect(Object.keys(body).sort()).toEqual(["auth", "mode", "plugin", "status", "version"])
     }
 
     if (body.status === "unhealthy") {
-      expect(typeof body.error).toBe("string");
-      expect(body.auth.loggedIn).toBe(false);
-      expect(Object.keys(body).sort()).toEqual([
-        "auth",
-        "error",
-        "status",
-        "version",
-      ]);
+      expect(typeof body.error).toBe("string")
+      expect(body.auth.loggedIn).toBe(false)
+      expect(Object.keys(body).sort()).toEqual(["auth", "error", "status", "version"])
     }
 
     if (body.status === "degraded") {
-      expect(typeof body.error).toBe("string");
-      expect(Object.keys(body).sort()).toEqual([
-        "error",
-        "mode",
-        "status",
-        "version",
-      ]);
+      expect(typeof body.error).toBe("string")
+      expect(Object.keys(body).sort()).toEqual(["error", "mode", "status", "version"])
     }
 
-    expect(response.status).toBe(body.status === "unhealthy" ? 503 : 200);
-  });
+    expect(response.status).toBe(body.status === "unhealthy" ? 503 : 200)
+  })
 
   // "returns degraded health when auth status is null" moved to
   // proxy-health-degraded.test.ts — needs mock.module before server import
 
   it("keeps CLI missing-binary warning behavior", async () => {
-    const errors: string[] = [];
-    const originalError = console.error;
+    const errors: string[] = []
+    const originalError = console.error
     console.error = (...args: any[]) => {
-      errors.push(args.join(" "));
-    };
+      errors.push(args.join(" "))
+    }
 
-    let startCalled = 0;
+    let startCalled = 0
     try {
       await runCli(
         async () => {
-          startCalled += 1;
-          const { EventEmitter } = await import("events");
-          return {
-            server: new EventEmitter(),
-            config: {},
-            close: async () => {},
-          } as any;
+          startCalled += 1
+          const { EventEmitter } = await import("events")
+          return { server: new EventEmitter(), config: {}, close: async () => {} } as any
         },
         (() => {
-          throw new Error("spawn ENOENT");
-        }) as any,
-      );
+          throw new Error("spawn ENOENT")
+        }) as any
+      )
     } finally {
-      console.error = originalError;
+      console.error = originalError
     }
 
-    expect(startCalled).toBe(1);
-    expect(
-      errors.some((line) =>
-        line.includes("Could not verify Claude auth status"),
-      ),
-    ).toBe(true);
-  });
-});
+    expect(startCalled).toBe(1)
+    expect(errors.some((line) => line.includes("Could not verify Claude auth status"))).toBe(true)
+  })
+})

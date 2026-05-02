@@ -6,19 +6,37 @@
  */
 
 import { join } from "node:path"
-import { homedir } from "node:os"
-import type { AgentAdapter } from "./adapter"
 import type { Options, SdkBeta, SettingSource } from "@anthropic-ai/claude-agent-sdk"
 import { createOpencodeMcpServer } from "../mcpTools"
 import { createPassthroughMcpServer, PASSTHROUGH_MCP_NAME } from "./passthroughTools"
+
+/**
+ * Return a copy of `env` with `CLAUDE_CONFIG_DIR` removed. Used by the
+ * sharedMemory branch — see the comment at the env construction site.
+ *
+ * Pure function: never mutates the input.
+ */
+function stripConfigDir(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  if (!("CLAUDE_CONFIG_DIR" in env)) return env
+  const out = { ...env }
+  delete out.CLAUDE_CONFIG_DIR
+  return out
+}
 
 export interface QueryContext {
   /** The prompt to send (text or async iterable for multimodal) */
   prompt: string | AsyncIterable<any>
   /** Resolved Claude model name */
   model: string
-  /** Client working directory */
+  /** SDK subprocess working directory — must exist on the proxy host. */
   workingDirectory: string
+  /**
+   * Client-local working directory (as reported in the request). May not
+   * exist on the proxy host. When this differs from workingDirectory the
+   * system prompt is augmented with a note directing the model to refer
+   * to file paths using the client's path rather than the proxy's.
+   */
+  clientWorkingDirectory?: string
   /** System context text (may be empty) */
   systemContext: string
   /** Path to Claude executable */
@@ -43,8 +61,14 @@ export interface QueryContext {
   undoRollbackUuid?: string
   /** SDK hooks (PreToolUse etc.) */
   sdkHooks?: any
-  /** The agent adapter providing tool configuration */
-  adapter: AgentAdapter
+  /** Blocked SDK built-in tools (from pipeline) */
+  blockedTools: readonly string[]
+  /** Agent-incompatible tools (from pipeline) */
+  incompatibleTools: readonly string[]
+  /** MCP server name for this adapter */
+  mcpServerName: string
+  /** Allowed MCP tools (from pipeline) */
+  allowedMcpTools: readonly string[]
   /** Callback to receive stderr lines from the Claude subprocess */
   onStderr?: (line: string) => void
   /** Effort level — controls thinking depth (low/medium/high/max) */
@@ -75,6 +99,8 @@ export interface QueryContext {
   sdkDebug?: boolean
   /** Additional directories Claude can access */
   additionalDirectories?: string[]
+  /** Advisor model for server-side advisor tool support */
+  advisorModel?: string
 }
 
 /**
@@ -87,39 +113,98 @@ export interface BuildQueryResult {
   options: Options
 }
 
+/**
+ * NOTE: agent-specific (passthrough mode).
+ *
+ * Compute maxTurns based on which SDK features are active. Each phase the SDK
+ * walks before returning control to the host costs a turn:
+ *   - Base (3): turn 1 generates content (extended thinking + tool_use blocks
+ *     captured by PreToolUse hook); turn 2 receives the deny and may emit a
+ *     follow-up (text or further tool_use); turn 3 wraps the stream cleanly.
+ *     Was 2 historically — bumped after telemetry showed opus[1m] requests with
+ *     thinking + tool_use exhausting the 2-turn budget mid-handoff and returning
+ *     500s on fresh (non-resume) requests. See errors.ts sdk_termination
+ *     diagnostic + telemetry.
+ *   - Resume / deferred (no extra turn over base): both fit within the 3-turn
+ *     budget. Resume rehydration and ToolSearch lookups complete inside turn 1.
+ *   - Both resume and deferred (+1): a second prelude phase pushes one phase
+ *     out, so budget becomes 4.
+ *   - Advisor (+3): server-side advisor executes call + result + final answer.
+ */
+function computePassthroughMaxTurns(
+  resumeSessionId: string | undefined,
+  hasDeferredTools: boolean,
+  advisorModel: string | undefined,
+): number {
+  const hasResume = !!resumeSessionId
+  const base = hasResume && hasDeferredTools ? 4 : 3
+  const advisorBump = advisorModel ? 3 : 0
+  return base + advisorBump
+}
+
+/**
+ * Build an addendum that tells the model which path belongs to the real user.
+ * Applied when the SDK subprocess runs in one directory on the proxy host but
+ * the client is working in a different directory on their own machine
+ * (typical of a remote Claude Code → network-proxy setup). Without this note
+ * the SDK's env block leaks `sdkCwd` into the model's context and Claude
+ * reports that as its working directory.
+ */
+export function buildCwdNote(sdkCwd: string, clientCwd?: string): string {
+  if (!clientCwd || clientCwd === sdkCwd) return ""
+  // Emit in the `<env>Working directory: …</env>` shape the Claude Code
+  // subprocess uses itself, so it doesn't auto-inject a second env block
+  // pointing at its own process.cwd() (which would be the proxy host path).
+  // Placed at the top of the append so it's the first env block the model
+  // sees. The subsequent notice tells the model to prefer this over any
+  // contradictory path that might slip through later in the context.
+  return (
+    `\n\n<env>\n` +
+    `Working directory: ${clientCwd}\n` +
+    `</env>\n` +
+    `<meridian-note>\n` +
+    `You are reached through a proxy. The subprocess running you resides at ` +
+    `"${sdkCwd}" on the proxy host, but that is not the user's working directory. ` +
+    `Always treat "${clientCwd}" as the working directory when referring to files or paths.\n` +
+    `</meridian-note>`
+  )
+}
+
 function resolveSystemPrompt(
   systemContext: string | undefined,
   passthrough: boolean,
   settingSources: SettingSource[] | undefined,
-  codeSystemPrompt?: boolean,
-  clientSystemPrompt?: boolean,
+  codeSystemPrompt: boolean | undefined,
+  clientSystemPrompt: boolean | undefined,
+  cwdNote: string,
 ): { systemPrompt?: string | { type: "preset"; preset: "claude_code"; append?: string } } {
   const hasSettings = settingSources != null && settingSources.length > 0
   const usePreset = codeSystemPrompt ?? (hasSettings || (!passthrough && !!systemContext))
   const includeClient = clientSystemPrompt ?? true
   const clientContext = includeClient ? systemContext : undefined
+  const append = [clientContext, cwdNote].filter(Boolean).join("") || undefined
 
   if (usePreset) {
-    return clientContext
-      ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: clientContext } }
+    return append
+      ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append } }
       : { systemPrompt: { type: "preset" as const, preset: "claude_code" as const } }
   }
-  if (clientContext) return { systemPrompt: clientContext }
+  if (append) return { systemPrompt: append }
   return {}
 }
 
 export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
   const {
-    prompt, model, workingDirectory, systemContext, claudeExecutable,
+    prompt, model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
     passthrough, stream, sdkAgents, passthroughMcp, cleanEnv, hasDeferredTools,
-    resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, adapter, onStderr,
+    resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools, incompatibleTools,
+    mcpServerName, allowedMcpTools, onStderr,
     effort, thinking, taskBudget, betas, settingSources, codeSystemPrompt, clientSystemPrompt,
     memory, dreaming, sharedMemory, maxBudgetUsd, fallbackModel, sdkDebug, additionalDirectories,
   } = ctx
+  const cwdNote = buildCwdNote(workingDirectory, clientWorkingDirectory)
 
-  const blockedTools = [...adapter.getBlockedBuiltinTools(), ...adapter.getAgentIncompatibleTools()]
-  const mcpServerName = adapter.getMcpServerName()
-  const allowedMcpTools = [...adapter.getAllowedMcpTools()]
+  const allBlockedTools = [...blockedTools, ...incompatibleTools]
 
   return {
     prompt,
@@ -129,34 +214,27 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       // Hosts like OpenCode embed Bun, so the check fires even when `bun`
       // is not in PATH — causing subprocess spawns to fail.
       executable: "node" as const,
-      // NOTE: agent-specific (passthrough mode) — 2 turns minimum, not 1.
-      // Turn 1: model generates tool_use blocks (captured by PreToolUse hook).
-      // Turn 2: SDK processes the blocked-tool handoff before the generator
-      //         returns. maxTurns: 1 throws "Reached maximum number of turns (1)"
-      //         before the response is complete, causing HTTP 500s.
-      // On resume: the SDK may spend a turn rehydrating session state before
-      // the model responds, so allow 3 turns to prevent "max turns (2)" errors.
-      // With deferred tools: ToolSearch consumes a turn before the actual tool
-      // call, so allow 3 turns to give room for search + call + handoff.
-      maxTurns: passthrough ? ((resumeSessionId || hasDeferredTools) ? 3 : 2) : 200,
+      maxTurns: passthrough
+        ? computePassthroughMaxTurns(resumeSessionId, hasDeferredTools, ctx.advisorModel)
+        : 200,
       cwd: workingDirectory,
       model,
       pathToClaudeCodeExecutable: claudeExecutable,
       ...(stream ? { includePartialMessages: true } : {}),
       permissionMode: "bypassPermissions" as const,
       allowDangerouslySkipPermissions: true,
-      ...resolveSystemPrompt(systemContext, passthrough, settingSources, codeSystemPrompt, clientSystemPrompt),
+      ...resolveSystemPrompt(systemContext, passthrough, settingSources, codeSystemPrompt, clientSystemPrompt, cwdNote),
       ...(passthrough
         ? {
-            disallowedTools: blockedTools,
+            disallowedTools: [...allBlockedTools],
             ...(passthroughMcp ? {
-              allowedTools: passthroughMcp.toolNames,
+              allowedTools: [...passthroughMcp.toolNames],
               mcpServers: { [PASSTHROUGH_MCP_NAME]: passthroughMcp.server },
             } : {}),
           }
         : {
-            disallowedTools: blockedTools,
-            allowedTools: allowedMcpTools,
+            disallowedTools: [...allBlockedTools],
+            allowedTools: [...allowedMcpTools],
             mcpServers: { [mcpServerName]: createOpencodeMcpServer() },
           }),
       plugins: [],
@@ -169,11 +247,18 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       } : {}),
       ...(onStderr ? { stderr: onStderr } : {}),
       env: {
-        ...cleanEnv,
+        // sharedMemory: the user wants the SDK to use Claude Code's default
+        // config dir so memories sync. Counter-intuitively we DON'T set
+        // CLAUDE_CONFIG_DIR=$HOME/.claude here — explicitly setting it (even
+        // to the default value) changes the SDK's Keychain lookup key and
+        // breaks OAuth (issue #453, upstream anthropics/claude-code#20553).
+        // Instead, strip any inherited custom CLAUDE_CONFIG_DIR from the
+        // profile env so the SDK falls back to its own default. That achieves
+        // the "share memory with Claude Code" intent without poisoning
+        // Keychain auth.
+        ...(sharedMemory ? stripConfigDir(cleanEnv) : cleanEnv),
         ENABLE_TOOL_SEARCH: hasDeferredTools ? "true" : "false",
         ...(passthrough ? { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } : {}),
-        // Shared memory: point SDK at ~/.claude so memories are shared with Claude Code
-        ...(sharedMemory ? { CLAUDE_CONFIG_DIR: join(homedir(), ".claude") } : {}),
         // When running as root (Docker, Unraid, NAS), set IS_SANDBOX=1 to
         // bypass the SDK's root check. Without this, the SDK exits with:
         // "--dangerously-skip-permissions cannot be used with root/sudo"
@@ -192,6 +277,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       ...(fallbackModel ? { fallbackModel } : {}),
       ...(sdkDebug ? { debug: true } : {}),
       ...(additionalDirectories && additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+      ...(ctx.advisorModel ? { advisorModel: ctx.advisorModel } : {}),
     }
   }
 }
