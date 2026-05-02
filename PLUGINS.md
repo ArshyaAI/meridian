@@ -158,6 +158,13 @@ Control which plugins load, their order, and enable/disable via `~/.config/merid
 - Plugins not listed in `plugins.json` but present in `~/.config/meridian/plugins/` are appended at the end, enabled by default
 - Absolute paths work even when `~/.config/meridian/plugins/` doesn't exist — no need to create the auto-scan directory if you only use external plugins
 
+**Docker/Railway example:** the image includes a pinned
+`@rynfar/meridian-plugin-opencode-scrub` dependency. In Railway, write
+`/home/claude/.config/meridian/plugins.json` with the same contents as
+`examples/plugins/opencode-scrub.plugins.json`. The compiled plugin path inside
+the container is:
+`/app/node_modules/@rynfar/meridian-plugin-opencode-scrub/dist/index.js`.
+
 ## The Metadata Bag
 
 Pass state between hooks using the `metadata` field:

@@ -61,7 +61,15 @@ import { filterBetasForProfile, getBetaPolicyFromEnv } from "./betas"
 import { createFileChangeHook, extractFileChangesFromMessages, formatFileChangeSummary, type FileChange } from "./fileChanges"
 import { detectTokenAnomalies, formatAnomalyAlerts, type TokenSnapshot } from "./tokenHealth"
 import { computeCacheHitRate, formatUsageSummary } from "./tokenUsage"
-import { sanitizeTextContent } from "./sanitize"
+import {
+  sanitizeTextContent,
+  maybeScrubRequestBody,
+  maybeStripAgentRequestBody,
+  maybeScrubSystemContext,
+  maybeStripAgentSystemContext,
+  maybeUnscrubMessageBody,
+  maybeUnscrubStreamEvent,
+} from "./sanitize"
 import {
   computeLineageHash,
   hashMessage,
@@ -392,7 +400,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // Hoist adapter detection before try so it's available in the catch block for telemetry
       const adapter = detectAdapter(c)
       try {
-        const body = await c.req.json()
+        let body = await c.req.json()
+        body = maybeScrubRequestBody(body)
+        body = maybeStripAgentRequestBody(body)
 
         // Validate required fields
         if (!Array.isArray(body.messages)) {
@@ -668,6 +678,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         claudeLog("debug.agents", { names: validAgentNames, count: validAgentNames.length })
       }
       systemContext = pipelineCtx.systemContext ?? systemContext
+      systemContext = maybeScrubSystemContext(systemContext)
+      systemContext = maybeStripAgentSystemContext(systemContext)
 
 
 
@@ -1343,7 +1355,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
               const responseSessionId = currentSessionId || resumeSessionId || `session_${Date.now()}`
 
-              return new Response(JSON.stringify({
+              const responseBody = {
             id: `msg_${Date.now()}`,
             type: "message",
             role: "assistant",
@@ -1358,7 +1370,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               cache_read_input_tokens: lastUsage?.cache_read_input_tokens,
               cache_creation_input_tokens: lastUsage?.cache_creation_input_tokens,
             },
-          }), {
+          }
+              maybeUnscrubMessageBody(responseBody)
+
+              return new Response(JSON.stringify(responseBody), {
             headers: {
               "Content-Type": "application/json",
               "X-Claude-Session-ID": responseSessionId,
@@ -1778,7 +1793,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     }
 
                     // Forward all other events (text, non-MCP tool_use like Task, message events)
-                    const payload = encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(event)}\n\n`)
+                    const payload = encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(maybeUnscrubStreamEvent(event))}\n\n`)
                     if (!safeEnqueue(payload, `stream_event:${eventType}`)) {
                       break
                     }
